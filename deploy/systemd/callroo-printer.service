@@ -1,0 +1,19 @@
+[Unit]
+Description=Call Roo Printer Service
+After=network-online.target bluetooth.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ancom
+Group=ancom
+WorkingDirectory=/opt/callroo-printer
+EnvironmentFile=-/etc/default/callroo-printer
+ExecStart=/opt/callroo-printer/.venv/bin/python -m callroo_printer --config /opt/callroo-printer/config.json --log-level INFO
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,76 @@
+{
+  "assets_dir": "assets",
+  "output": {
+    "logs_dir": "logs",
+    "outputs_dir": "outputs",
+    "log_filename": "callroo-printer.log"
+  },
+  "cooldown_seconds": 60,
+  "cooldown_on_trigger": true,
+  "trailing_feed_lines": 4,
+  "input": {
+    "stdin_enabled": true,
+    "linux_event_enabled": false,
+    "linux_event_paths": [
+      "/dev/input/by-id/your-button-event-kbd"
+    ],
+    "linux_event_keycodes": [
+      28,
+      96
+    ]
+  },
+  "audio": {
+    "clip_file": "clip.wav",
+    "clip_volume": 1.0,
+    "aplay_device": null
+  },
+  "bluetooth": {
+    "backend": "rfcomm",
+    "mac_address": "REPLACE_WITH_PRINTER_MAC",
+    "channel": null,
+    "channel_candidates": [
+      1,
+      6
+    ],
+    "auto_detect_channel": true,
+    "connect_timeout_seconds": 5.0,
+    "reconnect_delay_seconds": 2.0,
+    "keepalive_interval_seconds": 5.0,
+    "keepalive_timeout_seconds": 3.0,
+    "keepalive_hex": "1f1111",
+    "keepalive_response_bytes": 3,
+    "adapter_name": "hci0",
+    "adapter_reset_after_failures": 3,
+    "adapter_reset_cooldown_seconds": 30.0,
+    "timiniprint_repo": "vendor/TiMini-Print",
+    "timiniprint_python": null,
+    "timiniprint_cli": null,
+    "timiniprint_darkness": null,
+    "timiniprint_direct_y_scale": 1.0
+  },
+  "llm": {
+    "endpoint": "https://your-llm-endpoint.example/v1/",
+    "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+    "system_prompt": "당신은 매 출력마다 다른 편집 감각을 보여주는 한국어 하이쿠 운세 작성자다. 문장은 짧고 절제되어야 하며, 한 장면을 잡고 미세한 전환을 만든 뒤 잔향으로 끝낸다. 계절어와 추상 명사를 상투적으로 반복하지 않고, 생활 장면의 구체적 사물과 감각으로 운세를 쓴다. 최근 예시가 주어지면 그 표현의 어휘, 정서, 리듬을 피한다.",
+    "prompt": "오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {\"fortune\":\"...\"} 이고, fortune 값에는 본문만 넣어. 규칙: 1) 정확히 3행, 줄바꿈 포함 2) 각 행은 짧고 응축되게 쓸 것 3) 전체는 80자 이내 4) 설명문이나 산문이 아니라 하이쿠처럼 장면, 전환, 잔향이 느껴지게 쓸 것 5) 음절 수를 기계적으로 5-7-5에 맞추려고 하지는 말 것 6) 바람, 새싹, 햇살, 봄비, 꽃, 희망, 빛, 길, 시작, 기적 같은 상투어를 반복하지 말 것 7) 자연 풍경보다 일상 사물, 도시, 실내, 기계, 음식, 손의 감각처럼 손에 잡히는 장면을 우선 쓸 것 8) 추상적 훈계 대신 오늘 바로 체감될 작은 징조나 행동 힌트를 넣을 것 9) 말투와 리듬을 매번 다르게 할 것 10) 아래에 최근 출력 예시가 주어지면 첫 행 시작어, 핵심 명사, 분위기, 결말 어미가 겹치지 않게 완전히 새로 쓸 것",
+    "response_json_key": "fortune",
+    "enable_thinking": false,
+    "api_key_env": "SPARK_LLM_API_KEY",
+    "temperature": 0.9,
+    "max_tokens": 120,
+    "timeout_seconds": 25.0,
+    "fallback_text": "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요."
+  },
+  "layout": {
+    "paper_width_px": 384,
+    "side_margin_px": 20,
+    "section_gap_px": 16,
+    "image_max_height_px": 260,
+    "title_font_size": 28,
+    "body_font_size": 24,
+    "timestamp_font_size": 18,
+    "font_path": "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "threshold": 160,
+    "max_fortune_chars": 100
+  }
+}

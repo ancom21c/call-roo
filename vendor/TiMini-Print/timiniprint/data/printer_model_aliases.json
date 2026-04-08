@@ -1,0 +1,220 @@
+[
+  {
+    "head_name": {
+      "prefixes": [
+        "YT01",
+        "YT02",
+        "MX01",
+        "MX02",
+        "MX03",
+        "MX05",
+        "MX06",
+        "MX07",
+        "MINIPRINTER",
+        "JL-BR22",
+        "MX08",
+        "MX09",
+        "URBANWORXKIDSCAMERA",
+        "CYLOBTPRINTER",
+        "MXTP-100",
+        "AZ-P2108X",
+        "MX10",
+        "MX11",
+        "MX12",
+        "PD01",
+        "XOPOPPY",
+        "MX13",
+        "BQ01",
+        "BQ02",
+        "EWTTOET-Z0499",
+        "BQ05",
+        "BQ06",
+        "BQ07",
+        "BQ7A",
+        "BQ7B",
+        "BQ08",
+        "BQ95",
+        "BQ96",
+        "MXW009",
+        "MXW010",
+        "EWTTOET-N3689",
+        "EWTTOET-N3687",
+        "MXPC-100",
+        "GV-MA211",
+        "KP-IM606",
+        "BQ95B",
+        "BQ03",
+        "BQ95C",
+        "BQ06B",
+        "X6",
+        "K06",
+        "BQ17"
+      ]
+    },
+    "map_model_head_name": "GT01-"
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "TP84",
+        "TP85",
+        "TP86",
+        "TP87",
+        "TP88"
+      ]
+    },
+    "map_model_head_name": "TP81-"
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "M836"
+      ]
+    },
+    "map_model_head_name": "M832-"
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "Q580"
+      ]
+    },
+    "map_model_head_name": "Q302-"
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "T02E",
+        "Q02E",
+        "C02E"
+      ]
+    },
+    "map_model_head_name": "T02-"
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "YINTIBAO-V5",
+        "MP200",
+        "MP220",
+        "AEQ918N4"
+      ]
+    },
+    "map_model_head_name": "P100-",
+    "testing": true,
+    "testing_note": "Experimental 2-inch family aliases mapped to the P100 testing profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "YINTIBAO-V5PRO",
+        "MP200S",
+        "MP220S"
+      ]
+    },
+    "map_model_head_name": "P100S-",
+    "testing": true,
+    "testing_note": "Experimental high-dpi 2-inch family aliases mapped to the P100S testing profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "LP220",
+        "LY100_BLE"
+      ]
+    },
+    "map_model_head_name": "LP100",
+    "testing": true,
+    "testing_note": "Experimental label-family aliases mapped to the LP100 profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "LP220S"
+      ]
+    },
+    "map_model_head_name": "LP100S-",
+    "testing": true,
+    "testing_note": "Experimental high-dpi label-family aliases mapped to the LP100S testing profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "MP300"
+      ]
+    },
+    "map_model_head_name": "P3-",
+    "testing": true,
+    "testing_note": "Experimental wide-format family aliases mapped to the P3 testing profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "MP300S"
+      ]
+    },
+    "map_model_head_name": "P3S-",
+    "testing": true,
+    "testing_note": "Experimental high-dpi wide-format family aliases mapped to the P3S testing profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "MXW01",
+        "MXW01-1",
+        "X1",
+        "X2",
+        "C17",
+        "MXW-W5",
+        "AC695X_PRINT",
+        "JK01",
+        "PORTABLEPRINTER",
+        "INSTANTPRINTPLUS",
+        "REKA",
+        "HDMDT-00",
+        "KERUI",
+        "BH03"
+      ]
+    },
+    "map_model_head_name": "V5X-",
+    "protocol_family": "v5x",
+    "testing": true,
+    "testing_note": "Experimental V5X-family aliases mapped to the local V5X family profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "C21",
+        "D2",
+        "E2",
+        "NEWSMY"
+      ]
+    },
+    "map_model_head_name": "D1-",
+    "protocol_family": "dck",
+    "testing": true,
+    "testing_note": "Experimental DCK-family aliases mapped to the existing D1 profile."
+  },
+  {
+    "head_name": {
+      "prefixes": [
+        "MXW-A4"
+      ]
+    },
+    "map_model_head_name": "M08F-",
+    "testing": true,
+    "testing_note": "Experimental V10G-family alias mapped to the existing M08F profile."
+  },
+  {
+    "mac": {
+      "suffixes": [
+        "59"
+      ]
+    },
+    "only_for_targets": [
+      "GT01-"
+    ],
+    "map_model_head_name": "V5X-",
+    "protocol_family": "v5x"
+  }
+]

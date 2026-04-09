@@ -208,6 +208,181 @@ class LoopingWavePlayer:
             self._commands = None
 
 
+class OneShotWavePlayer:
+    def __init__(
+        self,
+        clip_path: Path,
+        volume: float = 1.0,
+        device: str | None = None,
+        runner: Callable[[list[str]], _PlayableProcess] | None = None,
+    ):
+        self.clip_path = clip_path
+        self.volume = volume
+        self.device = device
+        self._runner = runner or _spawn_process
+        self._lock = threading.RLock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._process: _PlayableProcess | None = None
+        self._prepared_clip_path: Path | None = None
+        self._commands: list[list[str]] | None = None
+        self._warning_emitted = False
+
+    def prime(self) -> bool:
+        with self._lock:
+            return self._ensure_commands_locked() is not None
+
+    def play(self, delay_seconds: float = 0.0) -> bool:
+        self.stop()
+        with self._lock:
+            commands = self._ensure_commands_locked()
+            if commands is None:
+                return False
+
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._play_once,
+                args=(commands, max(0.0, delay_seconds)),
+                name="clip-one-shot-player",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_event.set()
+            process = self._process
+            thread = self._thread
+
+        if process is not None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+        with self._lock:
+            process = self._process
+            if process is not None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            self._process = None
+            self._thread = None
+
+    def close(self) -> None:
+        self.stop()
+        with self._lock:
+            self._cleanup_prepared_clip_locked()
+            self._commands = None
+
+    def _play_once(self, commands: list[list[str]], delay_seconds: float) -> None:
+        if delay_seconds > 0.0 and self._stop_event.wait(delay_seconds):
+            return
+
+        for index, command in enumerate(commands):
+            try:
+                process = self._runner(command)
+            except Exception as exc:
+                LOGGER.warning("Failed to start one-shot audio playback: %s", exc)
+                return
+
+            with self._lock:
+                self._process = process
+
+            return_code: int | None
+            while not self._stop_event.is_set():
+                try:
+                    return_code = process.wait(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    continue
+                break
+            else:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                with self._lock:
+                    if self._process is process:
+                        self._process = None
+                return
+
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+
+            if return_code in (0, None):
+                return
+            if index + 1 < len(commands):
+                failed_device = _command_device_label(command)
+                next_command = commands[index + 1]
+                next_device = _command_device_label(next_command)
+                LOGGER.warning(
+                    "One-shot audio playback failed on %s with status %s. Retrying on %s.",
+                    failed_device,
+                    return_code,
+                    next_device,
+                )
+                continue
+            LOGGER.warning(
+                "One-shot audio playback exited unexpectedly with status %s.",
+                return_code,
+            )
+            return
+
+    def _warn_once(self, message: str) -> bool:
+        if self._warning_emitted:
+            return False
+        LOGGER.warning(message)
+        self._warning_emitted = True
+        return True
+
+    def _ensure_commands_locked(self) -> list[list[str]] | None:
+        if self._commands is not None:
+            return [command[:] for command in self._commands]
+
+        if self.volume <= 0.0:
+            LOGGER.info("One-shot audio playback disabled because audio.event_volume is 0.0.")
+            return None
+
+        self._cleanup_prepared_clip_locked()
+        playback_path = self.clip_path
+        try:
+            playback_path = _prepare_clip_for_aplay(self.clip_path, self.volume)
+        except Exception as exc:
+            self._warn_once(
+                f"Failed to prepare one-shot audio clip {self.clip_path}: {exc}"
+            )
+            return None
+        if playback_path != self.clip_path:
+            self._prepared_clip_path = playback_path
+
+        commands = _resolve_commands(playback_path, self.device)
+        if commands is None:
+            self._cleanup_prepared_clip_locked()
+            return None
+        self._commands = [command[:] for command in commands]
+        return [command[:] for command in self._commands]
+
+    def _cleanup_prepared_clip_locked(self) -> None:
+        if self._prepared_clip_path is None:
+            self._commands = None
+            return
+        try:
+            os.unlink(self._prepared_clip_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            LOGGER.debug("Failed to remove temporary audio clip %s: %s", self._prepared_clip_path, exc)
+        finally:
+            self._prepared_clip_path = None
+            self._commands = None
+
+
 def _resolve_commands(clip_path: Path, device: str | None = None) -> list[list[str]] | None:
     if not clip_path.exists():
         LOGGER.warning("Looping audio clip not found: %s", clip_path)

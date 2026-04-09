@@ -13,6 +13,7 @@ VENV_DIR=""
 CONFIG_PATH=""
 ENV_FILE="/etc/default/callroo-printer"
 ENV_EXAMPLE="${REPO_ROOT}/deploy/systemd/callroo-printer.env.example"
+PREPARE_TIMINIPRINT_SCRIPT="${REPO_ROOT}/scripts/apply_timiniprint_patches.sh"
 LOG_LEVEL="INFO"
 DRY_RUN=0
 
@@ -40,6 +41,7 @@ EOF
 sync_install_tree() {
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete \
+      --exclude ".git" \
       --exclude ".git/" \
       --exclude "/.venv/" \
       --exclude "vendor/TiMini-Print/.venv/" \
@@ -69,6 +71,19 @@ sync_install_tree() {
     --exclude="tests" \
     --exclude="deploy/systemd/callroo-printer.env" \
     -C "${REPO_ROOT}" -cf - . | tar -C "${INSTALL_DIR}" -xf -
+}
+
+prepare_timiniprint_submodule() {
+  if [[ ! -f "${PREPARE_TIMINIPRINT_SCRIPT}" ]]; then
+    return
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git not found. It is required to initialize and patch vendor/TiMini-Print." >&2
+    exit 1
+  fi
+
+  bash "${PREPARE_TIMINIPRINT_SCRIPT}"
 }
 
 rewrite_installed_config() {
@@ -188,6 +203,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 mkdir -p "${INSTALL_DIR}"
+prepare_timiniprint_submodule
 sync_install_tree
 
 if [[ -z "${VENV_DIR}" ]]; then

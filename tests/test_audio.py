@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from callroo_printer.audio import (
     LoopingWavePlayer,
+    OneShotWavePlayer,
     _parse_aplay_device_candidates,
     _prepare_clip_for_aplay,
 )
@@ -250,6 +251,58 @@ card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
 
             self.assertEqual(observed_paths, [str(prepared_path), str(prepared_path)])
             transcode.assert_called_once_with(clip_path, 1.0)
+
+    def test_one_shot_wave_player_uses_configured_aplay_device(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_path = Path(tmp) / "event.wav"
+            clip_path.write_bytes(b"RIFF")
+            observed_command: list[str] = []
+            started = threading.Event()
+
+            def runner(command: list[str]):
+                observed_command[:] = command
+                started.set()
+                return _ImmediateProcess()
+
+            player = OneShotWavePlayer(
+                clip_path=clip_path,
+                device="plughw:CARD=Headphones,DEV=0",
+                runner=runner,
+            )
+
+            self.assertTrue(player.play())
+            self.assertTrue(started.wait(1.0))
+            player.close()
+            self.assertEqual(
+                observed_command,
+                [
+                    "/usr/bin/aplay",
+                    "-q",
+                    "-D",
+                    "plughw:CARD=Headphones,DEV=0",
+                    str(clip_path),
+                ],
+            )
+
+    def test_one_shot_wave_player_respects_delay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_path = Path(tmp) / "event.wav"
+            clip_path.write_bytes(b"RIFF")
+            started = threading.Event()
+
+            def runner(command: list[str]):
+                started.set()
+                return _ImmediateProcess()
+
+            player = OneShotWavePlayer(
+                clip_path=clip_path,
+                runner=runner,
+            )
+
+            self.assertTrue(player.play(delay_seconds=0.05))
+            self.assertFalse(started.wait(0.01))
+            self.assertTrue(started.wait(0.5))
+            player.close()
 
 
 class _ImmediateProcess:

@@ -20,20 +20,25 @@ def compose_ticket(
     fortune_text: str,
     printed_at: datetime,
     config: LayoutConfig,
+    fortune_tag: str | None = None,
 ) -> Image.Image:
     title_font = load_font(config.font_path, config.title_font_size)
     body_font = load_font(config.font_path, config.body_font_size)
     timestamp_font = load_font(config.font_path, config.timestamp_font_size)
+    tag_font = load_font(config.font_path, config.timestamp_font_size)
 
     content_width = config.paper_width_px - (config.side_margin_px * 2)
     title = "오늘의 콜!루"
+    tag_text = f"[{fortune_tag}]" if fortune_tag else ""
     timestamp_text = printed_at.strftime("%Y-%m-%d %H:%M:%S")
+    tag_gap_px = max(8, config.section_gap_px // 2)
 
     measuring_image = Image.new("L", (config.paper_width_px, 10), color=255)
     measuring_draw = ImageDraw.Draw(measuring_image)
 
     fortune_lines = wrap_text_by_width(fortune_text, body_font, content_width)
     title_bbox = measuring_draw.multiline_textbbox((0, 0), title, font=title_font)
+    tag_bbox = measuring_draw.multiline_textbbox((0, 0), tag_text, font=tag_font)
     fortune_bbox = measuring_draw.multiline_textbbox(
         (0, 0), fortune_lines, font=body_font, spacing=6
     )
@@ -46,6 +51,7 @@ def compose_ticket(
     total_height = (
         config.side_margin_px
         + _bbox_height(title_bbox)
+        + (tag_gap_px + _bbox_height(tag_bbox) if tag_text else 0)
         + config.section_gap_px
         + asset_image.height
         + config.section_gap_px
@@ -60,7 +66,12 @@ def compose_ticket(
     cursor_y = config.side_margin_px
 
     draw.text((config.side_margin_px, cursor_y), title, fill=0, font=title_font)
-    cursor_y += _bbox_height(title_bbox) + config.section_gap_px
+    cursor_y += _bbox_height(title_bbox)
+    if tag_text:
+        cursor_y += tag_gap_px
+        draw.text((config.side_margin_px, cursor_y), tag_text, fill=0, font=tag_font)
+        cursor_y += _bbox_height(tag_bbox)
+    cursor_y += config.section_gap_px
 
     canvas.paste(asset_image, (config.side_margin_px, cursor_y))
     cursor_y += asset_image.height + config.section_gap_px

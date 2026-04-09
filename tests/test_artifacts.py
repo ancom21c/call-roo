@@ -87,6 +87,41 @@ class ArtifactManagerTest(unittest.TestCase):
                 ("첫 번째 운세",),
             )
 
+    def test_recent_fortunes_can_filter_by_profile_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ArtifactManager(Path(tmp))
+            first = manager.create_job(
+                triggered_at=datetime(2026, 4, 1, 20, 0, 0),
+                raw_input="\n",
+                dry_run=True,
+            )
+            second = manager.create_job(
+                triggered_at=datetime(2026, 4, 1, 20, 1, 0),
+                raw_input="\n",
+                dry_run=True,
+            )
+            third = manager.create_job(
+                triggered_at=datetime(2026, 4, 1, 20, 2, 0),
+                raw_input="\n",
+                dry_run=True,
+            )
+
+            first.write_text("fortune.txt", "기본 첫 운세\n")
+            first.write_json("result.json", {"llm_profile_name": "default"})
+            second.write_text("fortune.txt", "기가채드 운세\n")
+            second.write_json("selected-llm-profile.json", {"profile_name": "gigachad"})
+            third.write_text("fortune.txt", "기본 둘 운세\n")
+            third.write_json("result.json", {"llm_profile_name": "default"})
+
+            self.assertEqual(
+                manager.recent_fortunes(3, profile_name="default"),
+                ("기본 둘 운세", "기본 첫 운세"),
+            )
+            self.assertEqual(
+                manager.recent_fortunes(3, profile_name="gigachad"),
+                ("기가채드 운세",),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

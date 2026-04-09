@@ -52,6 +52,38 @@ class LLMClientTest(unittest.TestCase):
         )
         self.assertIn("결말 어미를 반복하지 마", prompt)
 
+    def test_compose_user_prompt_uses_custom_hint_wrappers(self) -> None:
+        prompt = _compose_user_prompt(
+            "기본 프롬프트",
+            current_time_hint="2026-04-08 16:30:00 KST",
+            variation_hint=None,
+            recent_fortunes=("첫 줄\n둘째 줄\n셋째 줄",),
+            current_time_hint_pre="시각 메모:",
+            current_time_hint_post="이 공기를 반영해.",
+            cleaned_examples_pre="이전 예시:",
+            cleaned_examples_post="이 톤은 피할 것.",
+        )
+        self.assertIn("시각 메모:", prompt)
+        self.assertIn("- 2026-04-08 16:30:00 KST", prompt)
+        self.assertIn("이 공기를 반영해.", prompt)
+        self.assertIn("이전 예시:", prompt)
+        self.assertIn("1. 첫 줄 / 둘째 줄 / 셋째 줄", prompt)
+        self.assertIn("이 톤은 피할 것.", prompt)
+
+    def test_compose_user_prompt_includes_allowed_tags(self) -> None:
+        prompt = _compose_user_prompt(
+            "기본 프롬프트",
+            current_time_hint=None,
+            variation_hint=None,
+            allowed_tags=("형광등", "자판기", "주전자"),
+            response_tag_key="selected_tag",
+        )
+        self.assertIn("이번 출력 태그 후보", prompt)
+        self.assertIn("- 형광등", prompt)
+        self.assertIn("- 자판기", prompt)
+        self.assertIn("- 주전자", prompt)
+        self.assertIn("JSON의 selected_tag 필드", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

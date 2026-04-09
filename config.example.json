@@ -22,7 +22,11 @@
   "audio": {
     "clip_file": "clip.wav",
     "clip_volume": 1.0,
-    "aplay_device": null
+    "event_volume": 1.0,
+    "aplay_device": null,
+    "printer_connected_file": null,
+    "printer_failed_file": null,
+    "print_completed_file": null
   },
   "bluetooth": {
     "backend": "rfcomm",
@@ -48,19 +52,83 @@
     "timiniprint_darkness": null,
     "timiniprint_direct_y_scale": 1.0
   },
-  "llm": {
-    "endpoint": "https://your-llm-endpoint.example/v1/",
-    "model": "Qwen/Qwen3.5-122B-A10B-FP8",
-    "system_prompt": "당신은 매 출력마다 다른 편집 감각을 보여주는 한국어 하이쿠 운세 작성자다. 문장은 짧고 절제되어야 하며, 한 장면을 잡고 미세한 전환을 만든 뒤 잔향으로 끝낸다. 계절어와 추상 명사를 상투적으로 반복하지 않고, 생활 장면의 구체적 사물과 감각으로 운세를 쓴다. 최근 예시가 주어지면 그 표현의 어휘, 정서, 리듬을 피한다.",
-    "prompt": "오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {\"fortune\":\"...\"} 이고, fortune 값에는 본문만 넣어. 규칙: 1) 정확히 3행, 줄바꿈 포함 2) 각 행은 짧고 응축되게 쓸 것 3) 전체는 80자 이내 4) 설명문이나 산문이 아니라 하이쿠처럼 장면, 전환, 잔향이 느껴지게 쓸 것 5) 음절 수를 기계적으로 5-7-5에 맞추려고 하지는 말 것 6) 바람, 새싹, 햇살, 봄비, 꽃, 희망, 빛, 길, 시작, 기적 같은 상투어를 반복하지 말 것 7) 자연 풍경보다 일상 사물, 도시, 실내, 기계, 음식, 손의 감각처럼 손에 잡히는 장면을 우선 쓸 것 8) 추상적 훈계 대신 오늘 바로 체감될 작은 징조나 행동 힌트를 넣을 것 9) 말투와 리듬을 매번 다르게 할 것 10) 아래에 최근 출력 예시가 주어지면 첫 행 시작어, 핵심 명사, 분위기, 결말 어미가 겹치지 않게 완전히 새로 쓸 것",
-    "response_json_key": "fortune",
-    "enable_thinking": false,
-    "api_key_env": "SPARK_LLM_API_KEY",
-    "temperature": 0.9,
-    "max_tokens": 120,
-    "timeout_seconds": 25.0,
-    "fallback_text": "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요."
-  },
+  "llm": [
+    {
+      "name": "indoor-night",
+      "weight": 2.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "당신은 매 출력마다 다른 편집 감각을 보여주는 한국어 하이쿠 운세 작성자다. 문장은 짧고 절제되어야 하며, 한 장면을 잡고 미세한 전환을 만든 뒤 잔향으로 끝낸다. 계절어와 추상 명사를 상투적으로 반복하지 않고, 생활 장면의 구체적 사물과 감각으로 운세를 쓴다. 최근 예시가 주어지면 그 표현의 어휘, 정서, 리듬을 피한다.",
+      "prompt": "오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {\"fortune\":\"...\",\"tag\":\"...\"} 이고, fortune 값에는 본문만 넣어. 규칙: 1) 정확히 3행, 줄바꿈 포함 2) 각 행은 짧고 응축되게 쓸 것 3) 전체는 80자 이내 4) 설명문이나 산문이 아니라 하이쿠처럼 장면, 전환, 잔향이 느껴지게 쓸 것 5) 음절 수를 기계적으로 5-7-5에 맞추려고 하지는 말 것 6) 바람, 새싹, 햇살, 봄비, 꽃, 희망, 빛, 길, 시작, 기적 같은 상투어를 반복하지 말 것 7) 자연 풍경보다 일상 사물, 도시, 실내, 기계, 음식, 손의 감각처럼 손에 잡히는 장면을 우선 쓸 것 8) 추상적 훈계 대신 오늘 바로 체감될 작은 징조나 행동 힌트를 넣을 것 9) 말투와 리듬을 매번 다르게 할 것 10) 아래에 최근 출력 예시가 주어지면 첫 행 시작어, 핵심 명사, 분위기, 결말 어미가 겹치지 않게 완전히 새로 쓸 것",
+      "response_tag_key": "tag",
+      "variation_hints": [
+        "형광등 아래, 단정한 어조, 작은 확신 하나",
+        "자판기 버튼, 짧고 단단한 리듬, 우연한 발견"
+      ],
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각의 공기와 타이밍을 반영하되, 문장을 숫자 나열처럼 쓰지는 마.",
+      "cleaned_examples_pre": "최근 출력 예시와 겹치지 말 것:",
+      "cleaned_examples_post": "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.9,
+      "max_tokens": 120,
+      "timeout_seconds": 25.0,
+      "fallback_text": "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요.",
+      "tags": {
+        "형광등": [
+          "hallway-01.png",
+          "hallway-02.png"
+        ],
+        "자판기": [
+          "vending-01.png",
+          "vending-02.png"
+        ],
+        "복도": [
+          "corridor-01.png"
+        ]
+      }
+    },
+    {
+      "name": "kitchen-morning",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "당신은 매 출력마다 다른 편집 감각을 보여주는 한국어 하이쿠 운세 작성자다. 문장은 짧고 절제되어야 하며, 한 장면을 잡고 미세한 전환을 만든 뒤 잔향으로 끝낸다. 계절어와 추상 명사를 상투적으로 반복하지 않고, 생활 장면의 구체적 사물과 감각으로 운세를 쓴다. 최근 예시가 주어지면 그 표현의 어휘, 정서, 리듬을 피한다.",
+      "prompt": "오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {\"fortune\":\"...\",\"tag\":\"...\"} 이고, fortune 값에는 본문만 넣어. 규칙: 1) 정확히 3행, 줄바꿈 포함 2) 각 행은 짧고 응축되게 쓸 것 3) 전체는 80자 이내 4) 설명문이나 산문이 아니라 하이쿠처럼 장면, 전환, 잔향이 느껴지게 쓸 것 5) 음절 수를 기계적으로 5-7-5에 맞추려고 하지는 말 것 6) 바람, 새싹, 햇살, 봄비, 꽃, 희망, 빛, 길, 시작, 기적 같은 상투어를 반복하지 말 것 7) 자연 풍경보다 일상 사물, 도시, 실내, 기계, 음식, 손의 감각처럼 손에 잡히는 장면을 우선 쓸 것 8) 추상적 훈계 대신 오늘 바로 체감될 작은 징조나 행동 힌트를 넣을 것 9) 말투와 리듬을 매번 다르게 할 것 10) 아래에 최근 출력 예시가 주어지면 첫 행 시작어, 핵심 명사, 분위기, 결말 어미가 겹치지 않게 완전히 새로 쓸 것",
+      "response_tag_key": "tag",
+      "variation_hints": [
+        "머그컵 김, 조용한 온기, 미뤘던 일의 실마리",
+        "싱크대 물방울, 담백한 장면, 손에 잡히는 하루"
+      ],
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각의 공기와 타이밍을 반영하되, 문장을 숫자 나열처럼 쓰지는 마.",
+      "cleaned_examples_pre": "최근 출력 예시와 겹치지 말 것:",
+      "cleaned_examples_post": "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.9,
+      "max_tokens": 120,
+      "timeout_seconds": 25.0,
+      "fallback_text": "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요.",
+      "tags": {
+        "주전자": [
+          "kettle-01.png"
+        ],
+        "머그컵": [
+          "mug-01.png",
+          "mug-02.png"
+        ],
+        "싱크대": [
+          "sink-01.png"
+        ]
+      }
+    }
+  ],
   "layout": {
     "paper_width_px": 384,
     "side_margin_px": 20,

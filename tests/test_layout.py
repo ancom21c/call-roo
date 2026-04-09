@@ -39,6 +39,7 @@ class LayoutTest(unittest.TestCase):
                     threshold=160,
                     max_fortune_chars=100,
                 ),
+                fortune_tag="형광등",
             )
 
         self.assertEqual(image.width, 384)

@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-from callroo_printer.config import LLMConfig
+from callroo_printer.config import LLMProfileConfig
 
 
 @dataclass(frozen=True)
@@ -19,11 +19,12 @@ class LLMCallResult:
     raw_text: str | None
     parsed_json: dict[str, object] | None
     text: str
+    tag: str | None
     error: str | None
 
 
 class OpenAICompatClient:
-    def __init__(self, config: LLMConfig):
+    def __init__(self, config: LLMProfileConfig):
         self.config = config
 
     def generate_fortune(
@@ -33,6 +34,7 @@ class OpenAICompatClient:
         current_time_hint: str | None = None,
         variation_hint: str | None = None,
         recent_fortunes: tuple[str, ...] = (),
+        allowed_tags: tuple[str, ...] = (),
     ) -> LLMCallResult:
         request_url = self._chat_completions_url()
         user_prompt = _compose_user_prompt(
@@ -40,6 +42,12 @@ class OpenAICompatClient:
             current_time_hint=current_time_hint,
             variation_hint=variation_hint,
             recent_fortunes=recent_fortunes,
+            allowed_tags=allowed_tags,
+            response_tag_key=self.config.response_tag_key,
+            current_time_hint_pre=self.config.current_time_hint_pre,
+            current_time_hint_post=self.config.current_time_hint_post,
+            cleaned_examples_pre=self.config.cleaned_examples_pre,
+            cleaned_examples_post=self.config.cleaned_examples_post,
         )
         payload: dict[str, object] = {
             "model": self.config.model,
@@ -74,6 +82,7 @@ class OpenAICompatClient:
                 raw_text=None,
                 parsed_json=None,
                 text="",
+                tag=None,
                 error=f"LLM request failed: {exc}",
             )
 
@@ -87,6 +96,7 @@ class OpenAICompatClient:
                 raw_text=None,
                 parsed_json=None,
                 text="",
+                tag=None,
                 error=f"Unexpected LLM response: {exc}",
             )
 
@@ -100,6 +110,7 @@ class OpenAICompatClient:
                 raw_text=raw_text,
                 parsed_json=None,
                 text="",
+                tag=None,
                 error="LLM response did not contain a valid JSON object.",
             )
 
@@ -112,6 +123,7 @@ class OpenAICompatClient:
                 raw_text=raw_text,
                 parsed_json=parsed_json,
                 text="",
+                tag=None,
                 error=(
                     f"LLM JSON response did not contain string field "
                     f"{self.config.response_json_key!r}."
@@ -125,6 +137,11 @@ class OpenAICompatClient:
             raw_text=raw_text,
             parsed_json=parsed_json,
             text=sanitize_text(extracted_text, max_chars=max_chars),
+            tag=_extract_selected_tag(
+                parsed_json,
+                response_tag_key=self.config.response_tag_key,
+                allowed_tags=allowed_tags,
+            ),
             error=None,
         )
 
@@ -173,14 +190,26 @@ def _compose_user_prompt(
     current_time_hint: str | None = None,
     variation_hint: str | None,
     recent_fortunes: tuple[str, ...] = (),
+    allowed_tags: tuple[str, ...] = (),
+    response_tag_key: str = "tag",
+    current_time_hint_pre: str = "이번 운세 기준 시각:",
+    current_time_hint_post: str = (
+        "위 시각의 공기와 타이밍을 반영하되, 문장을 숫자 나열처럼 쓰지는 마."
+    ),
+    cleaned_examples_pre: str = "최근 출력 예시와 겹치지 말 것:",
+    cleaned_examples_post: str = (
+        "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마."
+    ),
 ) -> str:
     sections = [base_prompt.strip()]
 
     if current_time_hint:
         sections.append(
-            "이번 운세 기준 시각:\n"
-            f"- {current_time_hint.strip()}\n"
-            "위 시각의 공기와 타이밍을 반영하되, 문장을 숫자 나열처럼 쓰지는 마."
+            _compose_hint_block(
+                current_time_hint_pre,
+                f"- {current_time_hint.strip()}",
+                current_time_hint_post,
+            )
         )
 
     cleaned_examples = [
@@ -194,15 +223,38 @@ def _compose_user_prompt(
             for index, fortune in enumerate(cleaned_examples, start=1)
         )
         sections.append(
-            "최근 출력 예시와 겹치지 말 것:\n"
-            f"{recent_lines}\n"
-            "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마."
+            _compose_hint_block(
+                cleaned_examples_pre,
+                recent_lines,
+                cleaned_examples_post,
+            )
+        )
+
+    if allowed_tags:
+        tag_lines = "\n".join(f"- {tag}" for tag in allowed_tags)
+        sections.append(
+            "\n".join(
+                (
+                    "이번 출력 태그 후보:",
+                    tag_lines,
+                    f"반드시 위 후보 중 문구와 가장 어울리는 태그 하나를 골라 JSON의 {response_tag_key} 필드에 정확히 넣어.",
+                )
+            )
         )
 
     if variation_hint:
         sections.append(f"이번 출력 변주 지시:\n- {variation_hint.strip()}")
 
     return "\n\n".join(section for section in sections if section)
+
+
+def _compose_hint_block(pre_hint: str, body: str, post_hint: str) -> str:
+    parts = []
+    for part in (pre_hint, body, post_hint):
+        cleaned = part.strip()
+        if cleaned:
+            parts.append(cleaned)
+    return "\n".join(parts)
 
 
 def _flatten_content(content: object) -> str:
@@ -231,3 +283,30 @@ def extract_json_object(text: str) -> dict[str, object] | None:
         if isinstance(value, dict):
             return value
     return None
+
+
+def _extract_selected_tag(
+    payload: dict[str, object],
+    *,
+    response_tag_key: str,
+    allowed_tags: tuple[str, ...],
+) -> str | None:
+    raw_tag = payload.get(response_tag_key)
+    if not isinstance(raw_tag, str):
+        return None
+    cleaned_tag = _normalize_tag(raw_tag)
+    if not cleaned_tag:
+        return None
+    if not allowed_tags:
+        return cleaned_tag
+
+    normalized_allowed = {
+        _normalize_tag(tag).casefold(): tag
+        for tag in allowed_tags
+        if _normalize_tag(tag)
+    }
+    return normalized_allowed.get(cleaned_tag.casefold())
+
+
+def _normalize_tag(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()

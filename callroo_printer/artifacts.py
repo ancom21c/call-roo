@@ -47,6 +47,7 @@ class ArtifactManager:
         limit: int,
         *,
         exclude_root: Path | None = None,
+        profile_name: str | None = None,
     ) -> tuple[str, ...]:
         fortunes: list[str] = []
         for job_dir in sorted(self.jobs_dir.iterdir(), reverse=True):
@@ -54,6 +55,10 @@ class ArtifactManager:
                 continue
             if exclude_root is not None and job_dir == exclude_root:
                 continue
+            if profile_name is not None:
+                job_profile_name = _load_job_profile_name(job_dir)
+                if job_profile_name != profile_name:
+                    continue
             fortune_path = job_dir / "fortune.txt"
             if not fortune_path.is_file():
                 continue
@@ -95,3 +100,28 @@ class JobArtifacts:
 
     def write_result(self, **payload: Any) -> Path:
         return self.write_json("result.json", dict(payload))
+
+
+def _load_job_profile_name(job_dir: Path) -> str | None:
+    result_payload = _load_json_file(job_dir / "result.json")
+    profile_name = result_payload.get("llm_profile_name")
+    if isinstance(profile_name, str) and profile_name.strip():
+        return profile_name.strip()
+
+    selected_payload = _load_json_file(job_dir / "selected-llm-profile.json")
+    profile_name = selected_payload.get("profile_name")
+    if isinstance(profile_name, str) and profile_name.strip():
+        return profile_name.strip()
+    return None
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}

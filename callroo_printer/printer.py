@@ -421,10 +421,12 @@ class TiMiniPrintDirectPrinter:
                 "timiniprint.transport.bluetooth.mxw01_direct"
             )
         except ImportError as exc:
+            patch_script = repo_path.parent.parent / "scripts" / "apply_timiniprint_patches.sh"
             raise RuntimeError(
                 "Failed to import TiMini-Print direct runtime. "
                 f"Checked repo {repo_path}, any bundled site-packages, "
-                f"and the active Python environment: {exc}"
+                f"and the active Python environment: {exc}. "
+                f"If this is a fresh clone, run {patch_script} first."
             ) from exc
 
         self._runtime = TiMiniPrintDirectRuntime(

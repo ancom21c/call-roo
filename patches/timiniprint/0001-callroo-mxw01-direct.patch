@@ -1,0 +1,942 @@
+diff --git a/requirements.txt b/requirements.txt
+index 26c129b..59da325 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -2,6 +2,7 @@ Pillow>=9.0
+ pypdfium2>=4.0
+ bleak>=0.22
+ crc8>=0.2.0
++pexpect>=4.9
+ pyserial>=3.5
+ python-lzo>=1.15
+ pyobjc-framework-IOBluetooth>=10.0; sys_platform == "darwin"
+diff --git a/timiniprint/app/cli.py b/timiniprint/app/cli.py
+index 87c46ed..61aba47 100644
+--- a/timiniprint/app/cli.py
++++ b/timiniprint/app/cli.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import argparse
+ import asyncio
+ import os
++import re
+ import tempfile
+ from typing import Optional, Sequence
+ 
+@@ -14,6 +15,8 @@ from ..transport.serial import SerialTransport
+ from .diagnostics import emit_startup_warnings
+ from .. import reporting
+ 
++_BT_ADDRESS_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
++
+ 
+ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+     parser = argparse.ArgumentParser(
+@@ -23,6 +26,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+     parser.add_argument("--bluetooth", help="Bluetooth name or address (default: first supported printer)")
+     parser.add_argument("--serial", metavar="PATH", help="Serial port path to bypass Bluetooth (e.g. /dev/rfcomm0)")
+     parser.add_argument("--model", help="Printer model number (required for --serial)")
++    parser.add_argument(
++        "--mxw01-direct",
++        action="store_true",
++        help="Use the direct Linux gatttool path for MXW01/C15 printers. Requires --bluetooth with a MAC address.",
++    )
++    parser.add_argument(
++        "--mxw01-direct-y-scale",
++        type=float,
++        metavar="FACTOR",
++        default=1.0,
++        help="Vertical stretch factor for --mxw01-direct (for example 2.0 if prints come out squashed).",
++    )
+     parser.add_argument("--scan", action="store_true", help="List nearby supported printers and exit")
+     parser.add_argument("--list-models", action="store_true", help="List known printer models and exit")
+     parser.add_argument("--text", metavar="TEXT", help="Print raw text instead of a file path")
+@@ -224,6 +239,19 @@ def _resolve_paper_motion_action(args: argparse.Namespace) -> Optional[str]:
+     return None
+ 
+ 
++def _is_bluetooth_mac_address(value: Optional[str]) -> bool:
++    if not value:
++        return False
++    return _BT_ADDRESS_RE.match(value.strip()) is not None
++
++
++def _resolve_mxw01_direct_y_scale(args: argparse.Namespace) -> float:
++    value = float(getattr(args, "mxw01_direct_y_scale", 1.0))
++    if value <= 0:
++        raise ValueError("MXW01 direct Y scale must be > 0")
++    return value
++
++
+ def _warn_alias_usage(match, device, reporter: reporting.Reporter) -> None:
+     used_alias = getattr(match, "used_alias", False) is True
+     is_testing = getattr(match, "testing", False) is True
+@@ -301,6 +329,43 @@ def print_bluetooth(
+     return 0
+ 
+ 
++def print_bluetooth_mxw01_direct(
++    args: argparse.Namespace,
++    reporter: reporting.Reporter,
++) -> int:
++    if not _is_bluetooth_mac_address(args.bluetooth):
++        raise RuntimeError(
++            "--mxw01-direct requires --bluetooth with the printer MAC address "
++            "(for example 48:0F:57:2B:CB:24)."
++        )
++
++    if args.model:
++        registry = PrinterModelRegistry.load()
++        resolver = DeviceResolver(registry)
++        model = resolver.require_model(args.model)
++        if model.protocol_family != ProtocolFamily.V5X:
++            raise RuntimeError("--mxw01-direct only supports V5X-family printers such as MXW01/C15.")
++
++    from ..transport.bluetooth.mxw01_direct import print_file as print_file_mxw01_direct
++
++    print_file_mxw01_direct(
++        args.bluetooth,
++        args.path,
++        reporter=reporter,
++        darkness=_resolve_blackening(args),
++        y_scale=_resolve_mxw01_direct_y_scale(args),
++        text_input=_resolve_text_input(args),
++        text_font=_resolve_text_font(args),
++        text_columns=_resolve_text_columns(args),
++        text_wrap=_resolve_text_wrap(args),
++        trim_side_margins=_resolve_trim_side_margins(args),
++        trim_top_bottom_margins=_resolve_trim_top_bottom_margins(args),
++        pdf_pages=_resolve_pdf_pages(args),
++        pdf_page_gap_mm=_resolve_pdf_page_gap(args),
++    )
++    return 0
++
++
+ def print_serial(args: argparse.Namespace) -> int:
+     registry = PrinterModelRegistry.load()
+     resolver = DeviceResolver(registry)
+@@ -411,6 +476,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+             detail="Provide either --feed/--retract or a file path/--text, not both. Use --help for usage."
+         )
+         return 2
++    if args.mxw01_direct and args.serial:
++        reporter.error(detail="--mxw01-direct cannot be combined with --serial. Use --bluetooth with the MXW01 MAC address.")
++        return 2
++    if args.mxw01_direct and action:
++        reporter.error(detail="--mxw01-direct currently supports print jobs only, not --feed/--retract.")
++        return 2
+     if args.path and args.text is not None:
+         reporter.error(detail="Provide either a file path or --text, not both. Use --help for usage.")
+         return 2
+@@ -422,6 +493,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
+             if args.serial:
+                 return paper_motion_serial(args, action)
+             return paper_motion_bluetooth(args, action, reporter)
++        if args.mxw01_direct:
++            return print_bluetooth_mxw01_direct(args, reporter)
+         if args.serial:
+             return print_serial(args)
+         return print_bluetooth(args, reporter)
+diff --git a/timiniprint/transport/bluetooth/mxw01_direct.py b/timiniprint/transport/bluetooth/mxw01_direct.py
+new file mode 100644
+index 0000000..830e528
+--- /dev/null
++++ b/timiniprint/transport/bluetooth/mxw01_direct.py
+@@ -0,0 +1,562 @@
++from __future__ import annotations
++
++import os
++import re
++import shutil
++import subprocess
++import tempfile
++import time
++import math
++from dataclasses import dataclass
++from pathlib import Path
++from typing import List, Optional
++
++from ... import reporting
++from ...protocol.encoding import pack_line
++from ...protocol.families import get_protocol_behavior
++from ...protocol.family import ProtocolFamily
++from ...rendering.converters import Page, PageLoader
++from ...rendering.renderer import image_to_bw_pixels
++from PIL import Image
++
++try:
++    import pexpect
++except ImportError:  # pragma: no cover - exercised via runtime dependency checks
++    pexpect = None
++
++
++PRINTER_WIDTH = 384
++PRINTER_WIDTH_BYTES = PRINTER_WIDTH // 8
++MIN_DATA_BYTES = 90 * PRINTER_WIDTH_BYTES
++
++CONTROL_HANDLE = "0x000a"
++NOTIFY_CCCD_HANDLE = "0x000d"
++DATA_HANDLE = "0x000f"
++
++PROMPT_PATTERN = r"\[LE\]>"
++NOTIFICATION_PATTERN = r"Notification handle = 0x([0-9a-fA-F]+) value: ([0-9a-fA-F ]+)"
++ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
++MTU_EXCHANGED_PATTERN = re.compile(r"MTU was exchanged successfully:\s*(\d+)")
++CONNECT_ERROR_PATTERN = r"Error:\s*connect to .*?:\s*(.+)"
++
++CRC8_TABLE = [
++    0x00, 0x07, 0x0E, 0x09, 0x1C, 0x1B, 0x12, 0x15, 0x38, 0x3F, 0x36, 0x31, 0x24, 0x23, 0x2A, 0x2D,
++    0x70, 0x77, 0x7E, 0x79, 0x6C, 0x6B, 0x62, 0x65, 0x48, 0x4F, 0x46, 0x41, 0x54, 0x53, 0x5A, 0x5D,
++    0xE0, 0xE7, 0xEE, 0xE9, 0xFC, 0xFB, 0xF2, 0xF5, 0xD8, 0xDF, 0xD6, 0xD1, 0xC4, 0xC3, 0xCA, 0xCD,
++    0x90, 0x97, 0x9E, 0x99, 0x8C, 0x8B, 0x82, 0x85, 0xA8, 0xAF, 0xA6, 0xA1, 0xB4, 0xB3, 0xBA, 0xBD,
++    0xC7, 0xC0, 0xC9, 0xCE, 0xDB, 0xDC, 0xD5, 0xD2, 0xFF, 0xF8, 0xF1, 0xF6, 0xE3, 0xE4, 0xED, 0xEA,
++    0xB7, 0xB0, 0xB9, 0xBE, 0xAB, 0xAC, 0xA5, 0xA2, 0x8F, 0x88, 0x81, 0x86, 0x93, 0x94, 0x9D, 0x9A,
++    0x27, 0x20, 0x29, 0x2E, 0x3B, 0x3C, 0x35, 0x32, 0x1F, 0x18, 0x11, 0x16, 0x03, 0x04, 0x0D, 0x0A,
++    0x57, 0x50, 0x59, 0x5E, 0x4B, 0x4C, 0x45, 0x42, 0x6F, 0x68, 0x61, 0x66, 0x73, 0x74, 0x7D, 0x7A,
++    0x89, 0x8E, 0x87, 0x80, 0x95, 0x92, 0x9B, 0x9C, 0xB1, 0xB6, 0xBF, 0xB8, 0xAD, 0xAA, 0xA3, 0xA4,
++    0xF9, 0xFE, 0xF7, 0xF0, 0xE5, 0xE2, 0xEB, 0xEC, 0xC1, 0xC6, 0xCF, 0xC8, 0xDD, 0xDA, 0xD3, 0xD4,
++    0x69, 0x6E, 0x67, 0x60, 0x75, 0x72, 0x7B, 0x7C, 0x51, 0x56, 0x5F, 0x58, 0x4D, 0x4A, 0x43, 0x44,
++    0x19, 0x1E, 0x17, 0x10, 0x05, 0x02, 0x0B, 0x0C, 0x21, 0x26, 0x2F, 0x28, 0x3D, 0x3A, 0x33, 0x34,
++    0x4E, 0x49, 0x40, 0x47, 0x52, 0x55, 0x5C, 0x5B, 0x76, 0x71, 0x78, 0x7F, 0x6A, 0x6D, 0x64, 0x63,
++    0x3E, 0x39, 0x30, 0x37, 0x22, 0x25, 0x2C, 0x2B, 0x06, 0x01, 0x08, 0x0F, 0x1A, 0x1D, 0x14, 0x13,
++    0xAE, 0xA9, 0xA0, 0xA7, 0xB2, 0xB5, 0xBC, 0xBB, 0x96, 0x91, 0x98, 0x9F, 0x8A, 0x8D, 0x84, 0x83,
++    0xDE, 0xD9, 0xD0, 0xD7, 0xC2, 0xC5, 0xCC, 0xCB, 0xE6, 0xE1, 0xE8, 0xEF, 0xFA, 0xFD, 0xF4, 0xF3,
++]
++
++DARKNESS_TO_INTENSITY = (0x58, 0x5A, 0x5D, 0x5F, 0x62)
++DEFAULT_ATT_MTU = 23
++DEFAULT_ATT_PAYLOAD_BYTES = DEFAULT_ATT_MTU - 3
++REQUESTED_ATT_MTU = 185
++DEFAULT_DIRECT_INTENSITY = DARKNESS_TO_INTENSITY[1]
++DEFAULT_BURST_CHUNK_DELAY_SECONDS = 0.001
++DEFAULT_STREAM_CHUNK_DELAY_SECONDS = 0.004
++PREFERRED_BULK_ROWS_PER_CHUNK = 3
++PREFERRED_BULK_CHUNK_BYTES = PRINTER_WIDTH_BYTES * PREFERRED_BULK_ROWS_PER_CHUNK
++INITIAL_BURST_ROWS = 96
++INITIAL_BURST_BYTES = PRINTER_WIDTH_BYTES * INITIAL_BURST_ROWS
++
++
++@dataclass(frozen=True)
++class Notification:
++    handle: int
++    raw: bytes
++    command_id: Optional[int]
++    payload: bytes
++
++
++def crc8(payload: bytes) -> int:
++    checksum = 0
++    for value in payload:
++        checksum = CRC8_TABLE[(checksum ^ value) & 0xFF]
++    return checksum
++
++
++def make_command(command_id: int, payload: bytes) -> bytes:
++    length = len(payload)
++    header = bytes([0x22, 0x21, command_id, 0x00, length & 0xFF, (length >> 8) & 0xFF])
++    return header + payload + bytes([crc8(payload), 0xFF])
++
++
++def decode_status(payload: bytes) -> str:
++    battery = payload[3] if len(payload) >= 4 else None
++    temperature = payload[4] if len(payload) >= 5 else None
++    error_group = payload[6] if len(payload) >= 7 else None
++    error_code = payload[7] if len(payload) >= 8 else None
++    return (
++        f"battery={battery if battery is not None else 'n/a'} "
++        f"temperature={temperature if temperature is not None else 'n/a'} "
++        f"error_group={error_group if error_group is not None else 'n/a'} "
++        f"error_code={error_code if error_code is not None else 'n/a'}"
++    )
++
++
++def _parse_hex_bytes(value: str) -> bytes:
++    return bytes.fromhex(value.replace(" ", "").strip())
++
++
++def _parse_notification(match) -> Notification:
++    handle = int(match.group(1), 16)
++    raw = _parse_hex_bytes(match.group(2))
++    if len(raw) >= 8 and raw[0] == 0x22 and raw[1] == 0x21:
++        command_id = raw[2]
++        length = raw[4] | (raw[5] << 8)
++        payload = raw[6 : 6 + length]
++    else:
++        command_id = None
++        payload = raw
++    return Notification(handle=handle, raw=raw, command_id=command_id, payload=payload)
++
++
++def darkness_to_intensity(darkness: Optional[int]) -> int:
++    if darkness is None:
++        return DEFAULT_DIRECT_INTENSITY
++    level = max(1, min(5, int(darkness)))
++    return DARKNESS_TO_INTENSITY[level - 1]
++
++
++def data_chunk_size_for_mtu(mtu: int) -> int:
++    payload_bytes = max(1, int(mtu) - 3)
++    if payload_bytes >= PREFERRED_BULK_CHUNK_BYTES:
++        return PREFERRED_BULK_CHUNK_BYTES
++    if payload_bytes >= PRINTER_WIDTH_BYTES * 2:
++        return PRINTER_WIDTH_BYTES * 2
++    if payload_bytes >= PRINTER_WIDTH_BYTES:
++        return PRINTER_WIDTH_BYTES
++    return payload_bytes
++
++
++def initial_burst_bytes_for_buffer(buffer_size: int) -> int:
++    if buffer_size <= 0:
++        return 0
++    target = min(buffer_size, max(MIN_DATA_BYTES, INITIAL_BURST_BYTES, (buffer_size + 3) // 4))
++    if target < PRINTER_WIDTH_BYTES:
++        return buffer_size
++    aligned = ((target + PRINTER_WIDTH_BYTES - 1) // PRINTER_WIDTH_BYTES) * PRINTER_WIDTH_BYTES
++    return min(buffer_size, aligned)
++
++
++def parse_exchanged_mtu(output: str) -> Optional[int]:
++    match = MTU_EXCHANGED_PATTERN.search(output or "")
++    if not match:
++        return None
++    return int(match.group(1))
++
++
++def _resolve_source_path(
++    path: Optional[str],
++    text_input: Optional[str],
++) -> tuple[str, Optional[str]]:
++    if text_input is None:
++        if not path:
++            raise RuntimeError("Missing file path")
++        return path, None
++
++    temp_path = None
++    try:
++        with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as handle:
++            handle.write(text_input)
++            temp_path = handle.name
++    except Exception:
++        if temp_path and os.path.exists(temp_path):
++            os.remove(temp_path)
++        raise
++    return temp_path, temp_path
++
++
++def load_pages(
++    path: Optional[str],
++    *,
++    text_input: Optional[str] = None,
++    text_font: Optional[str] = None,
++    text_columns: Optional[int] = None,
++    text_wrap: bool = True,
++    trim_side_margins: bool = True,
++    trim_top_bottom_margins: bool = True,
++    pdf_pages: Optional[str] = None,
++    pdf_page_gap_mm: int = 5,
++) -> tuple[List[Page], Path]:
++    source_path, temp_path = _resolve_source_path(path, text_input)
++    try:
++        loader = PageLoader(
++            text_font=text_font,
++            text_columns=text_columns,
++            text_wrap=text_wrap,
++            trim_side_margins=trim_side_margins,
++            trim_top_bottom_margins=trim_top_bottom_margins,
++            pdf_pages=pdf_pages,
++            pdf_page_gap_px=max(0, int(round(pdf_page_gap_mm * 200 / 25.4))),
++        )
++        pages = loader.load(source_path, PRINTER_WIDTH)
++        return pages, Path(source_path).resolve()
++    finally:
++        if temp_path and os.path.exists(temp_path):
++            os.remove(temp_path)
++
++
++def build_page_buffer(page: Page) -> tuple[bytes, int]:
++    if page.image.width != PRINTER_WIDTH:
++        raise ValueError(f"Expected width {PRINTER_WIDTH}, got {page.image.width}")
++
++    pixels = image_to_bw_pixels(page.image, dither=page.dither)
++    rows: List[List[int]] = []
++    for row_index in range(page.image.height):
++        start = row_index * PRINTER_WIDTH
++        row = pixels[start : start + PRINTER_WIDTH]
++        rows.append(list(reversed(row)))
++    rows.reverse()
++
++    buffer = bytearray()
++    for row in rows:
++        buffer.extend(pack_line(row, lsb_first=True))
++
++    if len(buffer) < MIN_DATA_BYTES:
++        buffer.extend(b"\x00" * (MIN_DATA_BYTES - len(buffer)))
++    return bytes(buffer), page.image.height
++
++
++def scale_pages_vertically(pages: List[Page], y_scale: float) -> List[Page]:
++    if y_scale == 1.0:
++        return pages
++    scaled_pages: List[Page] = []
++    for page in pages:
++        scaled_height = max(1, int(round(page.image.height * y_scale)))
++        scaled_image = page.image.resize((page.image.width, scaled_height), Image.Resampling.LANCZOS)
++        scaled_pages.append(Page(image=scaled_image, dither=page.dither, is_text=page.is_text))
++    return scaled_pages
++
++
++class Mxw01DirectSession:
++    def __init__(
++        self,
++        address: str,
++        reporter: reporting.Reporter = reporting.DUMMY_REPORTER,
++        connect_timeout: float = 15.0,
++        status_timeout: float = 5.0,
++    ) -> None:
++        if pexpect is None:
++            raise RuntimeError("pexpect is required for --mxw01-direct. Install it with: pip install pexpect")
++        if not shutil.which("gatttool"):
++            raise RuntimeError("gatttool is required for --mxw01-direct and was not found in PATH")
++        self._address = address
++        self._reporter = reporter
++        self._connect_timeout = max(0.5, float(connect_timeout))
++        self._status_timeout = max(0.5, float(status_timeout))
++        self._pending_notifications: List[Notification] = []
++        self._flow_can_write = True
++        self._flow_control = get_protocol_behavior(ProtocolFamily.V5X).transport.flow_control
++        self._data_chunk_size = data_chunk_size_for_mtu(DEFAULT_ATT_MTU)
++        command = self._resolve_command(address)
++        self._child = pexpect.spawn(
++            command[0],
++            command[1:],
++            encoding="utf-8",
++            echo=False,
++            timeout=10,
++        )
++        self._child.delaybeforesend = 0.01
++        self._expect_prompt(5)
++
++    def connect(self) -> None:
++        self._debug(f"connecting to {self._address}")
++        self._child.sendline("connect")
++        deadline = time.time() + self._connect_timeout
++        while True:
++            remaining = deadline - time.time()
++            if remaining <= 0:
++                raise TimeoutError(f"Timed out connecting to {self._address}")
++            try:
++                index = self._child.expect(
++                    [
++                        "Connection successful",
++                        "Device or resource busy",
++                        CONNECT_ERROR_PATTERN,
++                        PROMPT_PATTERN,
++                    ],
++                    timeout=min(max(0.2, remaining), 1.0),
++                )
++            except pexpect.TIMEOUT:
++                continue
++            if index == 0:
++                break
++            if index == 1:
++                raise RuntimeError(f"Printer is busy: {self._address}")
++            if index == 2:
++                detail = self._child.match.group(1).strip() if self._child.match else "unknown error"
++                raise RuntimeError(f"Failed to connect to {self._address}: {detail}")
++        time.sleep(0.2)
++        self._drain_output()
++        self._exchange_mtu(REQUESTED_ATT_MTU)
++        self._debug(f"data_chunk_size={self._data_chunk_size}")
++
++    def close(self) -> None:
++        try:
++            self._child.sendline("disconnect")
++            self._child.expect(PROMPT_PATTERN, timeout=2)
++        except Exception:
++            pass
++        try:
++            self._child.sendline("exit")
++        except Exception:
++            pass
++        try:
++            self._child.close(force=True)
++        except Exception:
++            pass
++
++    def enable_notifications(self) -> None:
++        self.write_request(NOTIFY_CCCD_HANDLE, b"\x01\x00")
++        self._debug("notifications enabled")
++
++    def query_status(self) -> bytes:
++        self.write_command(CONTROL_HANDLE, make_command(0xA1, b"\x00"))
++        status = self.wait_for_notification(0xA1, timeout=self._status_timeout).payload
++        self._debug(f"status {decode_status(status)} raw={status.hex()}")
++        return status
++
++    def print_page(self, buffer: bytes, height: int, intensity: int) -> None:
++        self.write_command(CONTROL_HANDLE, make_command(0xA2, bytes([intensity & 0xFF])))
++        self.write_command(
++            CONTROL_HANDLE,
++            make_command(0xA9, bytes([height & 0xFF, (height >> 8) & 0xFF, 0x30, 0x00])),
++        )
++        ack = self.wait_for_notification(0xA9, timeout=5.0).payload
++        if not ack or ack[0] != 0:
++            raise RuntimeError(f"Print request rejected: {ack.hex()}")
++
++        chunk_size = self._data_chunk_size
++        burst_limit = initial_burst_bytes_for_buffer(len(buffer))
++        self._debug(
++            f"stream plan chunk_size={chunk_size} burst_bytes={burst_limit} "
++            f"burst_delay={DEFAULT_BURST_CHUNK_DELAY_SECONDS:.3f}s "
++            f"stream_delay={DEFAULT_STREAM_CHUNK_DELAY_SECONDS:.3f}s"
++        )
++        total_chunks = int(math.ceil(len(buffer) / float(chunk_size)))
++        for chunk_index, start in enumerate(range(0, len(buffer), chunk_size), start=1):
++            self._wait_for_flow(timeout=15.0)
++            end = min(len(buffer), start + chunk_size)
++            self.write_command(DATA_HANDLE, buffer[start:end])
++            if chunk_index == 1 or chunk_index % 20 == 0 or chunk_index == total_chunks:
++                self._debug(f"sent chunk {chunk_index}/{total_chunks} size={end - start}")
++            delay_seconds = (
++                DEFAULT_BURST_CHUNK_DELAY_SECONDS
++                if end <= burst_limit
++                else DEFAULT_STREAM_CHUNK_DELAY_SECONDS
++            )
++            time.sleep(delay_seconds)
++
++        self.write_command(CONTROL_HANDLE, make_command(0xAD, b"\x00"))
++        complete = self.wait_for_notification(0xAA, timeout=30.0).payload
++        self._debug(f"print complete payload={complete.hex()}")
++
++    def write_request(self, handle: str, payload: bytes) -> str:
++        return self._run_command(f"char-write-req {handle} {payload.hex()}")
++
++    def write_command(self, handle: str, payload: bytes) -> str:
++        return self._run_command(f"char-write-cmd {handle} {payload.hex()}")
++
++    def wait_for_notification(self, command_id: int, timeout: float) -> Notification:
++        pending = self._pop_notification(command_id)
++        if pending is not None:
++            return pending
++
++        deadline = time.time() + timeout
++        while time.time() < deadline:
++            remaining = max(0.2, deadline - time.time())
++            try:
++                index = self._child.expect(
++                    [NOTIFICATION_PATTERN, PROMPT_PATTERN],
++                    timeout=min(remaining, 1.0),
++                )
++            except pexpect.TIMEOUT:
++                continue
++            if index == 0:
++                notification = _parse_notification(self._child.match)
++                if notification.command_id == command_id:
++                    return notification
++                self._pending_notifications.append(notification)
++        raise TimeoutError(f"Timed out waiting for notification 0x{command_id:02X}")
++
++    def _run_command(self, command: str) -> str:
++        self._drain_output()
++        self._child.sendline(command)
++        self._child.expect(PROMPT_PATTERN, timeout=10)
++        output = ANSI_PATTERN.sub("", self._child.before or "")
++        self._capture_notifications(output)
++        return output
++
++    def _expect_prompt(self, timeout: float) -> None:
++        self._child.expect(PROMPT_PATTERN, timeout=timeout)
++
++    def _capture_notifications(self, output: str) -> None:
++        for match in re.finditer(NOTIFICATION_PATTERN, output):
++            notification = _parse_notification(match)
++            if self._handle_flow_control(notification):
++                continue
++            if notification.command_id is not None:
++                self._pending_notifications.append(notification)
++
++    def _drain_output(self) -> None:
++        while True:
++            try:
++                chunk = self._child.read_nonblocking(size=4096, timeout=0.1)
++            except pexpect.TIMEOUT:
++                return
++            except pexpect.EOF:
++                return
++            self._capture_notifications(ANSI_PATTERN.sub("", chunk or ""))
++
++    def _collect_output_until_idle(self, idle_timeout: float, max_total: float) -> str:
++        parts: List[str] = []
++        deadline = time.time() + max_total
++        last_data_at = time.time()
++        while time.time() < deadline:
++            timeout = min(0.2, max(0.01, deadline - time.time()))
++            try:
++                chunk = self._child.read_nonblocking(size=4096, timeout=timeout)
++            except pexpect.TIMEOUT:
++                if time.time() - last_data_at >= idle_timeout:
++                    break
++                continue
++            except pexpect.EOF:
++                break
++            cleaned = ANSI_PATTERN.sub("", chunk or "")
++            if cleaned:
++                parts.append(cleaned)
++                self._capture_notifications(cleaned)
++                last_data_at = time.time()
++        return "".join(parts)
++
++    def _pop_notification(self, command_id: int) -> Optional[Notification]:
++        for index, notification in enumerate(self._pending_notifications):
++            if notification.command_id == command_id:
++                return self._pending_notifications.pop(index)
++        return None
++
++    def _handle_flow_control(self, notification: Notification) -> bool:
++        flow = self._flow_control
++        if flow is None:
++            return False
++        if notification.raw in flow.pause_packets:
++            self._flow_can_write = False
++            self._debug(f"flow pause raw={notification.raw.hex()}")
++            return True
++        if notification.raw in flow.resume_packets:
++            self._flow_can_write = True
++            self._debug(f"flow resume raw={notification.raw.hex()}")
++            return True
++        return False
++
++    def _wait_for_flow(self, timeout: float) -> None:
++        deadline = time.time() + timeout
++        while not self._flow_can_write:
++            if time.time() > deadline:
++                raise TimeoutError("Timed out waiting for MXW01 flow-control resume")
++            self._drain_output()
++            time.sleep(0.01)
++
++    def _resolve_command(self, address: str) -> List[str]:
++        base = ["gatttool", "-b", address, "-I"]
++        if os.geteuid() == 0:
++            return base
++        if shutil.which("sudo"):
++            result = subprocess.run(
++                ["sudo", "-n", "true"],
++                stdout=subprocess.DEVNULL,
++                stderr=subprocess.DEVNULL,
++                check=False,
++            )
++            if result.returncode == 0:
++                return ["sudo"] + base
++        raise RuntimeError(
++            "MXW01 direct mode needs root or passwordless sudo for gatttool. "
++            "Re-run the full command with sudo."
++        )
++
++    def _debug(self, detail: str) -> None:
++        self._reporter.debug(short="MXW01", detail=detail)
++
++    def _exchange_mtu(self, requested_mtu: int) -> None:
++        self._drain_output()
++        self._child.sendline(f"mtu {requested_mtu}")
++        output = self._collect_output_until_idle(idle_timeout=0.5, max_total=3.0)
++        negotiated_mtu = parse_exchanged_mtu(output)
++        if negotiated_mtu is None:
++            self._debug(
++                "mtu exchange response was not detected; "
++                f"falling back to chunk_size={self._data_chunk_size}"
++            )
++            return
++        self._data_chunk_size = data_chunk_size_for_mtu(negotiated_mtu)
++        self._debug(f"att mtu={negotiated_mtu} data_chunk_size={self._data_chunk_size}")
++
++
++def print_file(
++    address: str,
++    path: Optional[str],
++    *,
++    reporter: reporting.Reporter = reporting.DUMMY_REPORTER,
++    darkness: Optional[int] = None,
++    y_scale: float = 1.0,
++    text_input: Optional[str] = None,
++    text_font: Optional[str] = None,
++    text_columns: Optional[int] = None,
++    text_wrap: bool = True,
++    trim_side_margins: bool = True,
++    trim_top_bottom_margins: bool = True,
++    pdf_pages: Optional[str] = None,
++    pdf_page_gap_mm: int = 5,
++) -> None:
++    pages, source_path = load_pages(
++        path,
++        text_input=text_input,
++        text_font=text_font,
++        text_columns=text_columns,
++        text_wrap=text_wrap,
++        trim_side_margins=trim_side_margins,
++        trim_top_bottom_margins=trim_top_bottom_margins,
++        pdf_pages=pdf_pages,
++        pdf_page_gap_mm=pdf_page_gap_mm,
++    )
++    pages = scale_pages_vertically(pages, y_scale)
++    intensity = darkness_to_intensity(darkness)
++    reporter.debug(
++        short="MXW01",
++        detail=(
++            f"direct print source={source_path} address={address} "
++            f"pages={len(pages)} intensity=0x{intensity:02X} y_scale={y_scale:.2f}"
++        ),
++    )
++
++    session = Mxw01DirectSession(address=address, reporter=reporter)
++    try:
++        session.connect()
++        session.enable_notifications()
++        session.query_status()
++        for index, page in enumerate(pages, start=1):
++            buffer, height = build_page_buffer(page)
++            reporter.debug(
++                short="MXW01",
++                detail=(
++                    f"printing page {index}/{len(pages)} "
++                    f"height={height} raster_bytes={len(buffer)}"
++                ),
++            )
++            session.print_page(buffer, height, intensity)
++        session.query_status()
++    finally:
++        session.close()
+diff --git a/tools/mxw01_enter_print.py b/tools/mxw01_enter_print.py
+new file mode 100644
+index 0000000..452bbdf
+--- /dev/null
++++ b/tools/mxw01_enter_print.py
+@@ -0,0 +1,230 @@
++#!/usr/bin/env python3
++"""Keep an MXW01 direct session open and print on Enter."""
++from __future__ import annotations
++
++import argparse
++import os
++import sys
++import threading
++from pathlib import Path
++from typing import Optional
++
++ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if ROOT_DIR not in sys.path:
++    sys.path.insert(0, ROOT_DIR)
++
++from timiniprint import reporting
++from timiniprint.app.diagnostics import emit_startup_warnings
++from timiniprint.transport.bluetooth.mxw01_direct import (
++    Mxw01DirectSession,
++    build_page_buffer,
++    darkness_to_intensity,
++    load_pages,
++    scale_pages_vertically,
++)
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(
++        description="Keep MXW01/C15 connected and print the selected image when Enter is pressed."
++    )
++    parser.add_argument("path", help="Initial image/text/pdf path to print")
++    parser.add_argument(
++        "--bluetooth",
++        required=True,
++        help="Printer MAC address (for example 48:0F:57:2B:CB:24)",
++    )
++    parser.add_argument("--darkness", type=int, choices=range(1, 6), help="Print darkness (1-5)")
++    parser.add_argument(
++        "--y-scale",
++        type=float,
++        default=1.0,
++        help="Vertical scale factor applied before printing",
++    )
++    parser.add_argument(
++        "--keepalive-seconds",
++        type=float,
++        default=15.0,
++        help="How often to ping printer status while idle; 0 disables keepalive",
++    )
++    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logs")
++    return parser.parse_args()
++
++
++def build_reporter(verbose: bool) -> reporting.Reporter:
++    levels = {"warning", "error", "debug"} if verbose else {"warning", "error"}
++    return reporting.Reporter([reporting.StderrSink(levels=levels)])
++
++
++class EnterPrintLoop:
++    def __init__(
++        self,
++        *,
++        address: str,
++        path: str,
++        darkness: Optional[int],
++        y_scale: float,
++        keepalive_seconds: float,
++        reporter: reporting.Reporter,
++    ) -> None:
++        self._address = address
++        self._path = path
++        self._darkness = darkness
++        self._intensity = darkness_to_intensity(darkness)
++        self._y_scale = y_scale
++        self._keepalive_seconds = max(0.0, keepalive_seconds)
++        self._reporter = reporter
++        self._lock = threading.RLock()
++        self._stop_event = threading.Event()
++        self._keepalive_thread: Optional[threading.Thread] = None
++        self._session: Optional[Mxw01DirectSession] = None
++
++    def start(self) -> None:
++        with self._lock:
++            self._connect_locked()
++        if self._keepalive_seconds > 0:
++            self._keepalive_thread = threading.Thread(
++                target=self._keepalive_loop,
++                name="mxw01-keepalive",
++                daemon=True,
++            )
++            self._keepalive_thread.start()
++
++    def close(self) -> None:
++        self._stop_event.set()
++        if self._keepalive_thread is not None:
++            self._keepalive_thread.join(timeout=2.0)
++        with self._lock:
++            self._close_session_locked()
++
++    def set_path(self, path: str) -> Path:
++        resolved = Path(path).expanduser().resolve()
++        if not resolved.exists():
++            raise FileNotFoundError(f"File not found: {resolved}")
++        self._path = str(resolved)
++        return resolved
++
++    def print_once(self) -> Path:
++        with self._lock:
++            return self._print_once_locked(retry_allowed=True)
++
++    def _print_once_locked(self, *, retry_allowed: bool) -> Path:
++        try:
++            self._ensure_connected_locked()
++            assert self._session is not None
++            pages, source_path = load_pages(self._path)
++            pages = scale_pages_vertically(pages, self._y_scale)
++            self._session.query_status()
++            for index, page in enumerate(pages, start=1):
++                buffer, height = build_page_buffer(page)
++                self._reporter.debug(
++                    short="MXW01",
++                    detail=(
++                        f"loop print page {index}/{len(pages)} "
++                        f"height={height} raster_bytes={len(buffer)} source={source_path}"
++                    ),
++                )
++                self._session.print_page(buffer, height, self._intensity)
++            self._session.query_status()
++            return source_path
++        except Exception as exc:
++            if not retry_allowed:
++                raise
++            self._reporter.warning(
++                short="MXW01",
++                detail=f"Print failed, reconnecting once: {exc}",
++            )
++            self._connect_locked()
++            return self._print_once_locked(retry_allowed=False)
++
++    def _ensure_connected_locked(self) -> None:
++        if self._session is None:
++            self._connect_locked()
++
++    def _connect_locked(self) -> None:
++        self._close_session_locked()
++        session = Mxw01DirectSession(address=self._address, reporter=self._reporter)
++        try:
++            session.connect()
++            session.enable_notifications()
++            session.query_status()
++        except Exception:
++            session.close()
++            raise
++        self._session = session
++
++    def _close_session_locked(self) -> None:
++        if self._session is None:
++            return
++        try:
++            self._session.close()
++        finally:
++            self._session = None
++
++    def _keepalive_loop(self) -> None:
++        while not self._stop_event.wait(self._keepalive_seconds):
++            with self._lock:
++                if self._session is None:
++                    continue
++                try:
++                    self._session.query_status()
++                except Exception as exc:
++                    self._reporter.warning(
++                        short="MXW01",
++                        detail=f"Keepalive failed, reconnecting: {exc}",
++                    )
++                    try:
++                        self._connect_locked()
++                    except Exception as reconnect_exc:
++                        self._reporter.warning(
++                            short="MXW01",
++                            detail=f"Reconnect failed: {reconnect_exc}",
++                        )
++                        self._close_session_locked()
++
++
++def main() -> int:
++    args = parse_args()
++    reporter = build_reporter(args.verbose)
++    emit_startup_warnings(reporter)
++
++    loop = EnterPrintLoop(
++        address=args.bluetooth,
++        path=args.path,
++        darkness=args.darkness,
++        y_scale=args.y_scale,
++        keepalive_seconds=args.keepalive_seconds,
++        reporter=reporter,
++    )
++    current_path = loop.set_path(args.path)
++    loop.start()
++
++    print(f"Connected to {args.bluetooth}")
++    print(f"Current file: {current_path}")
++    print("Press Enter to print, type a new file path to switch, or type q to quit.")
++
++    try:
++        while True:
++            try:
++                command = input("> ")
++            except EOFError:
++                print()
++                break
++            stripped = command.strip()
++            if stripped.lower() in {"q", "quit", "exit"}:
++                break
++            if stripped:
++                current_path = loop.set_path(stripped)
++                print(f"Updated file: {current_path}")
++                continue
++            printed_path = loop.print_once()
++            print(f"Printed: {printed_path}")
++    except KeyboardInterrupt:
++        print()
++    finally:
++        loop.close()
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

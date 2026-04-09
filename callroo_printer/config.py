@@ -30,18 +30,33 @@ class BluetoothConfig:
 
 
 @dataclass(frozen=True)
-class LLMConfig:
+class LLMProfileConfig:
+    name: str
+    weight: float
     endpoint: str
     model: str
     system_prompt: str
     prompt: str
+    tags: dict[str, tuple[Path, ...]]
+    variation_hints: tuple[str, ...]
+    current_time_hint_format: str
+    current_time_hint_pre: str
+    current_time_hint_post: str
+    cleaned_examples_pre: str
+    cleaned_examples_post: str
     response_json_key: str
+    response_tag_key: str
     enable_thinking: bool
     api_key_env: Optional[str]
     temperature: float
     max_tokens: int
     timeout_seconds: float
     fallback_text: str
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    profiles: tuple[LLMProfileConfig, ...]
 
 
 @dataclass(frozen=True)
@@ -77,7 +92,11 @@ class InputConfig:
 class AudioConfig:
     clip_file: Path
     clip_volume: float
+    event_volume: float
     aplay_device: Optional[str]
+    printer_connected_file: Optional[Path]
+    printer_failed_file: Optional[Path]
+    print_completed_file: Optional[Path]
 
 
 @dataclass(frozen=True)
@@ -133,7 +152,20 @@ def load_config(config_path: Path) -> AppConfig:
             audio_section.get("clip_file", "clip.wav"),
         ),
         clip_volume=_clip_volume(audio_section.get("clip_volume", 1.0)),
+        event_volume=_clip_volume(audio_section.get("event_volume", 1.0)),
         aplay_device=_optional_str(audio_section.get("aplay_device")),
+        printer_connected_file=_optional_audio_clip_path(
+            assets_dir,
+            audio_section.get("printer_connected_file"),
+        ),
+        printer_failed_file=_optional_audio_clip_path(
+            assets_dir,
+            audio_section.get("printer_failed_file"),
+        ),
+        print_completed_file=_optional_audio_clip_path(
+            assets_dir,
+            audio_section.get("print_completed_file"),
+        ),
     )
 
     bluetooth = BluetoothConfig(
@@ -184,34 +216,7 @@ def load_config(config_path: Path) -> AppConfig:
     )
 
     llm = LLMConfig(
-        endpoint=str(
-            llm_section.get("endpoint", "https://your-llm-endpoint.example/v1/")
-        ),
-        model=str(llm_section.get("model", "gpt-4.1-mini")),
-        system_prompt=str(
-            llm_section.get(
-                "system_prompt",
-                "당신은 짧고 절제된 한국어 하이쿠 운세를 쓰는 조용한 시인이다.",
-            )
-        ),
-        prompt=str(
-            llm_section.get(
-                "prompt",
-                '오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {"fortune":"..."} 이고, fortune 값에는 본문만 넣어. 정확히 3행으로, 각 행은 짧고 응축되게 쓰고, 설명문 대신 장면과 전환과 잔향이 남게 작성해.',
-            )
-        ),
-        response_json_key=str(llm_section.get("response_json_key", "fortune")),
-        enable_thinking=bool(llm_section.get("enable_thinking", False)),
-        api_key_env=_optional_str(llm_section.get("api_key_env", "SPARK_LLM_API_KEY")),
-        temperature=float(llm_section.get("temperature", 0.9)),
-        max_tokens=int(llm_section.get("max_tokens", 120)),
-        timeout_seconds=float(llm_section.get("timeout_seconds", 25.0)),
-        fallback_text=str(
-            llm_section.get(
-                "fallback_text",
-                "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요.",
-            )
-        ),
+        profiles=_load_llm_profiles(assets_dir, llm_section),
     )
 
     font_path = layout_section.get("font_path")
@@ -274,6 +279,12 @@ def _resolve_audio_clip_path(assets_dir: Path, value: Any) -> Path:
     return (assets_dir / path).resolve()
 
 
+def _optional_audio_clip_path(assets_dir: Path, value: Any) -> Optional[Path]:
+    if value in (None, ""):
+        return None
+    return _resolve_audio_clip_path(assets_dir, value)
+
+
 def _clip_volume(value: Any) -> float:
     volume = float(value)
     if volume < 0.0:
@@ -281,3 +292,155 @@ def _clip_volume(value: Any) -> float:
     if volume > 1.0:
         return 1.0
     return volume
+
+
+def _load_llm_profiles(
+    assets_dir: Path,
+    llm_section: Any,
+) -> tuple[LLMProfileConfig, ...]:
+    if isinstance(llm_section, list) and llm_section:
+        return tuple(
+            _load_llm_profile(
+                assets_dir,
+                profile_section if isinstance(profile_section, dict) else {},
+                index=index,
+                default_name=f"profile-{index}",
+            )
+            for index, profile_section in enumerate(llm_section, start=1)
+        )
+    if isinstance(llm_section, dict):
+        return (
+            _load_llm_profile(
+                assets_dir,
+                llm_section,
+                index=1,
+                default_name="default",
+            ),
+        )
+    return (
+        _load_llm_profile(
+            assets_dir,
+            {},
+            index=1,
+            default_name="default",
+        ),
+    )
+
+
+def _load_llm_profile(
+    assets_dir: Path,
+    profile_section: dict[str, Any],
+    *,
+    index: int,
+    default_name: str,
+) -> LLMProfileConfig:
+    return LLMProfileConfig(
+        name=str(profile_section.get("name", default_name)),
+        weight=_profile_weight(profile_section.get("weight", 1.0)),
+        endpoint=str(
+            profile_section.get(
+                "endpoint",
+                "https://your-llm-endpoint.example/v1/",
+            )
+        ),
+        model=str(profile_section.get("model", "gpt-4.1-mini")),
+        system_prompt=str(
+            profile_section.get(
+                "system_prompt",
+                "당신은 짧고 절제된 한국어 하이쿠 운세를 쓰는 조용한 시인이다.",
+            )
+        ),
+        prompt=str(
+            profile_section.get(
+                "prompt",
+                '오늘의 운세를 한국어 하이쿠 형태로 작성해줘. 반드시 JSON 객체 하나만 반환해. 스키마는 {"fortune":"...","tag":"..."} 이고, fortune 값에는 본문만 넣어. 정확히 3행으로, 각 행은 짧고 응축되게 쓰고, 설명문 대신 장면과 전환과 잔향이 남게 작성해.',
+            )
+        ),
+        tags=_tag_asset_map(
+            assets_dir,
+            profile_section.get("tags", profile_section.get("asset_pools", {})),
+        ),
+        variation_hints=_string_tuple(profile_section.get("variation_hints", [])),
+        current_time_hint_format=str(
+            profile_section.get(
+                "current_time_hint_format",
+                "%Y-%m-%d %H:%M:%S %Z",
+            )
+        ),
+        current_time_hint_pre=str(
+            profile_section.get(
+                "current_time_hint_pre",
+                "이번 운세 기준 시각:",
+            )
+        ),
+        current_time_hint_post=str(
+            profile_section.get(
+                "current_time_hint_post",
+                "위 시각의 공기와 타이밍을 반영하되, 문장을 숫자 나열처럼 쓰지는 마.",
+            )
+        ),
+        cleaned_examples_pre=str(
+            profile_section.get(
+                "cleaned_examples_pre",
+                "최근 출력 예시와 겹치지 말 것:",
+            )
+        ),
+        cleaned_examples_post=str(
+            profile_section.get(
+                "cleaned_examples_post",
+                "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마.",
+            )
+        ),
+        response_json_key=str(profile_section.get("response_json_key", "fortune")),
+        response_tag_key=str(profile_section.get("response_tag_key", "tag")),
+        enable_thinking=bool(profile_section.get("enable_thinking", False)),
+        api_key_env=_optional_str(
+            profile_section.get("api_key_env", "SPARK_LLM_API_KEY")
+        ),
+        temperature=float(profile_section.get("temperature", 0.9)),
+        max_tokens=int(profile_section.get("max_tokens", 120)),
+        timeout_seconds=float(profile_section.get("timeout_seconds", 25.0)),
+        fallback_text=str(
+            profile_section.get(
+                "fallback_text",
+                "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요.",
+            )
+        ),
+    )
+
+def _tag_asset_map(
+    assets_dir: Path,
+    value: Any,
+) -> dict[str, tuple[Path, ...]]:
+    if not isinstance(value, dict):
+        return {}
+    tag_asset_map: dict[str, tuple[Path, ...]] = {}
+    for raw_tag, raw_paths in value.items():
+        tag = str(raw_tag).strip()
+        if not tag or not isinstance(raw_paths, list):
+            continue
+        resolved_paths = []
+        for raw_path in raw_paths:
+            resolved = _resolve_audio_clip_path(assets_dir, raw_path)
+            if resolved.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+                resolved_paths.append(resolved)
+        tag_asset_map[tag] = tuple(resolved_paths)
+    return tag_asset_map
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    items = []
+    for raw_item in value:
+        item = str(raw_item).strip()
+        if item:
+            items.append(item)
+    return tuple(items)
+
+
+def _profile_weight(value: Any) -> float:
+    weight = float(value)
+    if weight < 0.0:
+        return 0.0
+    return weight

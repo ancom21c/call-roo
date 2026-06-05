@@ -125,6 +125,19 @@ class OpenAICompatClient:
                 model_name=model_config.name,
                 attempts=previous_attempts,
             )
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return LLMCallResult(
+                request_url=request_url,
+                request_payload=payload,
+                response_payload=None,
+                raw_text=None,
+                parsed_json=None,
+                text="",
+                tag=None,
+                error=f"Invalid LLM response JSON: {exc}",
+                model_name=model_config.name,
+                attempts=previous_attempts,
+            )
 
         try:
             content = body["choices"][0]["message"]["content"]

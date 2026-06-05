@@ -173,6 +173,86 @@ class LLMClientTest(unittest.TestCase):
         self.assertEqual([attempt["status"] for attempt in result.attempts], ["error", "ok"])
         self.assertEqual(urlopen.call_count, 2)
 
+    def test_generate_fortune_tries_next_model_after_invalid_json_response(self) -> None:
+        client = OpenAICompatClient(
+            SimpleNamespace(
+                prompt="운세를 JSON으로 써줘.",
+                system_prompt="JSON 객체 하나만 반환한다.",
+                response_tag_key="tag",
+                response_json_key="fortune",
+                current_time_hint_pre="시각:",
+                current_time_hint_post="시각 반영.",
+                cleaned_examples_pre="최근:",
+                cleaned_examples_post="새 조합.",
+                models=(
+                    SimpleNamespace(
+                        name="primary",
+                        endpoint="https://primary.invalid/v1/",
+                        model="primary-model",
+                        enable_thinking=False,
+                        api_key="primary-key",
+                        api_key_env=None,
+                        temperature=0.7,
+                        max_tokens=80,
+                        timeout_seconds=1.0,
+                    ),
+                    SimpleNamespace(
+                        name="fallback",
+                        endpoint="https://fallback.invalid/v1/",
+                        model="fallback-model",
+                        enable_thinking=False,
+                        api_key="fallback-key",
+                        api_key_env=None,
+                        temperature=0.7,
+                        max_tokens=80,
+                        timeout_seconds=1.0,
+                    ),
+                ),
+            )
+        )
+        response = _FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"fortune": "복구됨\n두 번째 모델\n성공", "tag": "행운"},
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=(_FakeRawHTTPResponse(b"not-json"), response),
+        ) as urlopen:
+            result = client.generate_fortune(max_chars=100, allowed_tags=("행운",))
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.model_name, "fallback")
+        self.assertEqual(result.text, "복구됨\n두 번째 모델\n성공")
+        self.assertEqual([attempt["status"] for attempt in result.attempts], ["error", "ok"])
+        self.assertIn("Invalid LLM response JSON", result.attempts[0]["error"])
+        self.assertEqual(urlopen.call_count, 2)
+
+
+class _FakeRawHTTPResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "_FakeRawHTTPResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
 class _FakeHTTPResponse:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload

@@ -39,6 +39,12 @@ class DashboardHtmlTest(unittest.TestCase):
             _DASHBOARD_HTML,
         )
 
+    def test_dashboard_renders_bluetooth_status_pill(self) -> None:
+        self.assertIn('id="bluetooth-pill"', _DASHBOARD_HTML)
+        self.assertIn('id="bluetooth-pill-text"', _DASHBOARD_HTML)
+        self.assertIn("bluetoothStatusLevel(bluetooth.status)", _DASHBOARD_HTML)
+        self.assertIn("Bluetooth ${bluetoothStatusLabel(bluetooth.status)}", _DASHBOARD_HTML)
+
 
 class DashboardSnapshotBuilderTest(unittest.TestCase):
     def test_snapshot_filters_previews_by_selected_date(self) -> None:

@@ -175,6 +175,13 @@ _DASHBOARD_HTML = """<!doctype html>
       align-content: start;
     }
 
+    .status-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -922,9 +929,15 @@ _DASHBOARD_HTML = """<!doctype html>
         <p>출력 이력 프리뷰를 날짜로 걸러 보고, 현재 서비스 상태와 최근 로그, LLM 프롬프트 설정을 접이식 패널로 확인합니다. 기본 포트는 <strong>3001</strong>입니다.</p>
       </article>
       <aside class="panel status-rail">
-        <div id="service-pill" class="status-pill level-unknown">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span id="service-pill-text">상태 확인 중</span>
+        <div class="status-pills">
+          <div id="service-pill" class="status-pill level-unknown">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="service-pill-text">상태 확인 중</span>
+          </div>
+          <div id="bluetooth-pill" class="status-pill level-unknown">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="bluetooth-pill-text">Bluetooth 확인 중</span>
+          </div>
         </div>
         <div>
           <div class="stat-label">System Summary</div>
@@ -1183,6 +1196,19 @@ _DASHBOARD_HTML = """<!doctype html>
       return labels[status] || status || "확인 안 됨";
     }
 
+    function bluetoothStatusLevel(status) {
+      if (status === "connected") {
+        return "healthy";
+      }
+      if (status === "retrying" || status === "connecting" || status === "starting") {
+        return "stale";
+      }
+      if (status === "disabled" || status === "stopped") {
+        return "inactive";
+      }
+      return "unknown";
+    }
+
     function renderStats(snapshot) {
       const latestJob = snapshot.latest_job;
       const statsGrid = document.getElementById("stats-grid");
@@ -1266,9 +1292,13 @@ _DASHBOARD_HTML = """<!doctype html>
 
     function renderStatus(snapshot) {
       const service = snapshot.service || {};
+      const bluetooth = snapshot.bluetooth || {};
       const pill = document.getElementById("service-pill");
       pill.className = `status-pill level-${escapeHtml(service.level || "unknown")}`;
       document.getElementById("service-pill-text").textContent = service.label || "unknown";
+      const bluetoothPill = document.getElementById("bluetooth-pill");
+      bluetoothPill.className = `status-pill level-${bluetoothStatusLevel(bluetooth.status)}`;
+      document.getElementById("bluetooth-pill-text").textContent = `Bluetooth ${bluetoothStatusLabel(bluetooth.status)}`;
       document.getElementById("service-summary").textContent = service.summary || "상태 정보를 찾지 못했습니다.";
       document.getElementById("last-refresh").textContent = formatDateTime(snapshot.generated_at);
     }

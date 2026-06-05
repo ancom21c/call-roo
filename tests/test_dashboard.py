@@ -351,6 +351,57 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             payload = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertIn("lucky.png", payload["llm"][0]["tags"]["행운"])
 
+    def test_upload_image_does_not_write_file_when_config_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            config_path = root / "config.json"
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            payload["llm"] = {"name": "legacy-shape"}
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                _upload_asset(
+                    config_path,
+                    config,
+                    {
+                        "kind": "image",
+                        "filename": "orphan.png",
+                        "content_base64": "aW1hZ2U=",
+                        "profile_name": "default",
+                        "tag": "행운",
+                    },
+                )
+
+            self.assertFalse((root / "assets" / "orphan.png").exists())
+
+    def test_upload_image_restores_existing_file_when_config_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            config_path = root / "config.json"
+            target_path = root / "assets" / "room.png"
+            target_path.write_bytes(b"old-room")
+
+            with patch(
+                "callroo_printer.dashboard._write_config_payload",
+                side_effect=OSError("write failed"),
+            ):
+                with self.assertRaises(OSError):
+                    _upload_asset(
+                        config_path,
+                        config,
+                        {
+                            "kind": "image",
+                            "filename": "room.png",
+                            "content_base64": "bmV3LXJvb20=",
+                            "profile_name": "default",
+                            "tag": "행운",
+                        },
+                    )
+
+            self.assertEqual(target_path.read_bytes(), b"old-room")
+
     def test_queue_dashboard_print_appends_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

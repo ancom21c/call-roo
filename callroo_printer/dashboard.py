@@ -2904,7 +2904,6 @@ def _upload_asset(
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError("uploaded file is too large")
 
-    _atomic_write_bytes(target_path, content)
     config_payload = _read_config_payload(config_path)
     changed_config = False
 
@@ -2953,8 +2952,17 @@ def _upload_asset(
     else:
         raise ValueError("kind must be image or audio")
 
-    if changed_config:
-        _write_config_payload(config_path, config_payload)
+    previous_content = target_path.read_bytes() if target_path.is_file() else None
+    _atomic_write_bytes(target_path, content)
+    try:
+        if changed_config:
+            _write_config_payload(config_path, config_payload)
+    except Exception:
+        if previous_content is None:
+            _unlink_if_exists(target_path)
+        else:
+            _atomic_write_bytes(target_path, previous_content)
+        raise
 
     return {
         "ok": True,

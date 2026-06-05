@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from callroo_printer.dashboard import (
     detect_service_config_path,
     _create_llm_profile_config,
     _delete_llm_profile_config,
+    _build_health_response,
     _queue_dashboard_print,
     _update_llm_profile_config,
     _upload_asset,
@@ -51,6 +53,38 @@ class DashboardHtmlTest(unittest.TestCase):
         self.assertIn(f'<link rel="icon" type="image/png" href="{asset_url}">', _DASHBOARD_HTML)
         self.assertIn(f'<link rel="apple-touch-icon" href="{asset_url}">', _DASHBOARD_HTML)
         self.assertIn(f'<img class="hero-mark" src="{asset_url}"', _DASHBOARD_HTML)
+
+
+class DashboardHealthTest(unittest.TestCase):
+    def test_health_is_ok_only_when_service_and_bluetooth_are_running(self) -> None:
+        payload, status = _build_health_response(
+            {
+                "service": {"level": "healthy", "label": "running"},
+                "bluetooth": {"status": "connected", "updated_at": "2026-06-05T20:43:56+09:00"},
+            }
+        )
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "healthy")
+        self.assertTrue(payload["service"]["running"])
+        self.assertTrue(payload["bluetooth"]["running"])
+
+    def test_health_is_unhealthy_when_bluetooth_is_not_connected(self) -> None:
+        payload, status = _build_health_response(
+            {
+                "service": {"level": "healthy", "label": "running"},
+                "bluetooth": {"status": "retrying", "last_error": "Timed out connecting"},
+            }
+        )
+
+        self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "unhealthy")
+        self.assertTrue(payload["service"]["running"])
+        self.assertFalse(payload["bluetooth"]["running"])
+        self.assertEqual(payload["bluetooth"]["status"], "retrying")
+        self.assertEqual(payload["bluetooth"]["last_error"], "Timed out connecting")
 
 
 class DashboardSnapshotBuilderTest(unittest.TestCase):

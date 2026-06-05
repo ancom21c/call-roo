@@ -2541,6 +2541,35 @@ class _DashboardServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+def _build_health_response(snapshot: dict[str, Any]) -> tuple[dict[str, Any], HTTPStatus]:
+    service = snapshot.get("service")
+    bluetooth = snapshot.get("bluetooth")
+    service_payload = service if isinstance(service, dict) else {}
+    bluetooth_payload = bluetooth if isinstance(bluetooth, dict) else {}
+    service_running = (
+        service_payload.get("level") == "healthy"
+        and service_payload.get("label") == "running"
+    )
+    bluetooth_running = bluetooth_payload.get("status") == "connected"
+    healthy = service_running and bluetooth_running
+    payload = {
+        "ok": healthy,
+        "status": "healthy" if healthy else "unhealthy",
+        "service": {
+            "running": service_running,
+            "level": service_payload.get("level") or "unknown",
+            "label": service_payload.get("label") or "unknown",
+        },
+        "bluetooth": {
+            "running": bluetooth_running,
+            "status": bluetooth_payload.get("status") or "unknown",
+            "updated_at": bluetooth_payload.get("updated_at") or "",
+            "last_error": bluetooth_payload.get("last_error") or "",
+        },
+    }
+    return payload, HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE
+
+
 def serve_dashboard(
     config: AppConfig,
     *,
@@ -2602,7 +2631,8 @@ def serve_dashboard(
                 self._send_file(asset_path, send_body=send_body)
                 return
             if parsed.path == "/health":
-                self._send_json({"ok": True}, send_body=send_body)
+                payload, status = _build_health_response(builder.build_snapshot())
+                self._send_json(payload, send_body=send_body, status=status)
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "not found")
 

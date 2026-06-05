@@ -45,6 +45,13 @@ class DashboardHtmlTest(unittest.TestCase):
         self.assertIn("bluetoothStatusLevel(bluetooth.status)", _DASHBOARD_HTML)
         self.assertIn("Bluetooth ${bluetoothStatusLabel(bluetooth.status)}", _DASHBOARD_HTML)
 
+    def test_dashboard_uses_asset_for_favicon_and_headline_mark(self) -> None:
+        asset_url = "/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png"
+
+        self.assertIn(f'<link rel="icon" type="image/png" href="{asset_url}">', _DASHBOARD_HTML)
+        self.assertIn(f'<link rel="apple-touch-icon" href="{asset_url}">', _DASHBOARD_HTML)
+        self.assertIn(f'<img class="hero-mark" src="{asset_url}"', _DASHBOARD_HTML)
+
 
 class DashboardSnapshotBuilderTest(unittest.TestCase):
     def test_snapshot_filters_previews_by_selected_date(self) -> None:

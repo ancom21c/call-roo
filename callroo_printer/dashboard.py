@@ -42,6 +42,8 @@ _DASHBOARD_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>callroo dashboard</title>
+  <link rel="icon" type="image/png" href="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png">
+  <link rel="apple-touch-icon" href="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png">
   <style>
     :root {
       --bg: #f4efe8;
@@ -145,8 +147,26 @@ _DASHBOARD_HTML = """<!doctype html>
       text-transform: uppercase;
     }
 
-    h1 {
+    .hero-title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
       margin: 0 0 8px;
+      min-width: 0;
+    }
+
+    .hero-mark {
+      width: clamp(38px, 5vw, 58px);
+      height: clamp(38px, 5vw, 58px);
+      flex: 0 0 auto;
+      border-radius: 999px;
+      object-fit: cover;
+      border: 2px solid rgba(38, 25, 14, 0.12);
+      box-shadow: 0 10px 24px rgba(38, 25, 14, 0.18);
+    }
+
+    h1 {
+      margin: 0;
       font-size: clamp(28px, 4.6vw, 52px);
       line-height: 1;
       letter-spacing: 0;
@@ -924,7 +944,10 @@ _DASHBOARD_HTML = """<!doctype html>
   <main>
     <section class="hero">
       <article class="panel hero-copy">
-        <h1>CALLROO PRINTER DASHBOARD</h1>
+        <div class="hero-title-row">
+          <img class="hero-mark" src="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png" alt="" aria-hidden="true">
+          <h1>CALLROO PRINTER DASHBOARD</h1>
+        </div>
         <div class="hero-subtitle">생성 결과, 상태, 로그를 한 화면에서</div>
         <p>출력 이력 프리뷰를 날짜로 걸러 보고, 현재 서비스 상태와 최근 로그, LLM 프롬프트 설정을 접이식 패널로 확인합니다. 기본 포트는 <strong>3001</strong>입니다.</p>
       </article>

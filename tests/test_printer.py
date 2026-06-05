@@ -17,7 +17,7 @@ from callroo_printer.printer import (
 
 
 class PrinterTest(unittest.TestCase):
-    def test_resolve_bluetooth_adapter_names_skips_missing_configured_adapters(self) -> None:
+    def test_resolve_bluetooth_adapter_names_preserves_configured_adapters(self) -> None:
         config = _bluetooth_config(adapter_name="hci0,hci1")
 
         with patch(
@@ -26,7 +26,7 @@ class PrinterTest(unittest.TestCase):
         ):
             adapter_names = resolve_bluetooth_adapter_names(config)
 
-        self.assertEqual(adapter_names, ("hci0",))
+        self.assertEqual(adapter_names, ("hci0", "hci1"))
 
     def test_timiniprint_direct_keeps_session_alive(self) -> None:
         session_class = FakeSession

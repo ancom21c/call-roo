@@ -73,16 +73,10 @@ def resolve_bluetooth_adapter_names(config: BluetoothConfig) -> tuple[str, ...]:
     disabled = {name.lower() for name in config.disabled_adapter_names}
     configured = _parse_configured_adapter_names(config.adapter_name)
     available = _list_available_bluetooth_adapters()
-    available_map = {name.lower(): name for name in available}
     if not configured or (len(configured) == 1 and configured[0].lower() == "auto"):
         candidates = available
     else:
-        filtered: list[str] = []
-        for name in configured:
-            actual_name = available_map.get(name.lower())
-            if actual_name is not None:
-                filtered.append(actual_name)
-        candidates = tuple(filtered)
+        candidates = configured
 
     selected: list[str] = []
     for name in candidates:

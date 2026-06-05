@@ -54,6 +54,24 @@ class ArtifactManagerTest(unittest.TestCase):
             self.assertEqual(result_payload, {"status": "old"})
             self.assertEqual(list(job.root.glob(".result.json.*.tmp")), [])
 
+    def test_write_json_cleans_temp_file_if_fsync_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ArtifactManager(Path(tmp))
+            job = manager.create_job(
+                triggered_at=datetime(2026, 4, 1, 20, 0, 0),
+                raw_input="\n",
+                dry_run=True,
+            )
+            job.write_json("result.json", {"status": "old"})
+
+            with patch("callroo_printer.artifacts.os.fsync", side_effect=OSError("fsync failed")):
+                with self.assertRaises(OSError):
+                    job.write_json("result.json", {"status": "new"})
+
+            result_payload = json.loads((job.root / "result.json").read_text("utf-8"))
+            self.assertEqual(result_payload, {"status": "old"})
+            self.assertEqual(list(job.root.glob(".result.json.*.tmp")), [])
+
     def test_create_job_writes_trigger_metadata_when_provided(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manager = ArtifactManager(Path(tmp))

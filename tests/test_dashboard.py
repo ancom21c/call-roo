@@ -284,6 +284,28 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             )
             self.assertEqual(list(root.glob(".config.json.*.tmp")), [])
 
+    def test_write_config_payload_cleans_temp_file_if_fsync_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps({"llm": [{"name": "old"}]}),
+                encoding="utf-8",
+            )
+
+            with patch("callroo_printer.dashboard.os.fsync", side_effect=OSError("fsync failed")):
+                with self.assertRaises(OSError):
+                    _write_config_payload(
+                        config_path,
+                        {"llm": [{"name": "new"}]},
+                    )
+
+            self.assertEqual(
+                json.loads(config_path.read_text(encoding="utf-8")),
+                {"llm": [{"name": "old"}]},
+            )
+            self.assertEqual(list(root.glob(".config.json.*.tmp")), [])
+
     def test_dashboard_edit_token_verification_uses_config_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

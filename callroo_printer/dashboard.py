@@ -2993,17 +2993,17 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
-    with tempfile.NamedTemporaryFile(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        delete=False,
-    ) as handle:
-        tmp_path = Path(handle.name)
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
     try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp_path.replace(path)
     except Exception:
         _unlink_if_exists(tmp_path)

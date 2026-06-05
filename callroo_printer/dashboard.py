@@ -10,6 +10,7 @@ import mimetypes
 import os
 import shlex
 import subprocess
+import tempfile
 import time
 import uuid
 from collections import Counter, deque
@@ -2903,7 +2904,7 @@ def _upload_asset(
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError("uploaded file is too large")
 
-    target_path.write_bytes(content)
+    _atomic_write_bytes(target_path, content)
     config_payload = _read_config_payload(config_path)
     changed_config = False
 
@@ -2971,10 +2972,43 @@ def _read_config_payload(config_path: Path) -> dict[str, Any]:
 
 
 def _write_config_payload(config_path: Path, payload: dict[str, Any]) -> None:
-    config_path.write_text(
+    _atomic_write_text(
+        config_path,
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        tmp_path = Path(handle.name)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        tmp_path.replace(path)
+    except Exception:
+        _unlink_if_exists(tmp_path)
+        raise
+
+
+def _unlink_if_exists(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _find_profile_payload(

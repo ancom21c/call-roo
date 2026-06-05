@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -77,25 +79,25 @@ class JobArtifacts:
 
     def write_json(self, filename: str, payload: dict[str, Any]) -> Path:
         path = self.root / filename
-        path.write_text(
+        _atomic_write_text(
+            path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
         return path
 
     def write_text(self, filename: str, text: str) -> Path:
         path = self.root / filename
-        path.write_text(text, encoding="utf-8")
+        _atomic_write_text(path, text)
         return path
 
     def write_bytes(self, filename: str, payload: bytes) -> Path:
         path = self.root / filename
-        path.write_bytes(payload)
+        _atomic_write_bytes(path, payload)
         return path
 
     def save_image(self, filename: str, image: Image.Image) -> Path:
         path = self.root / filename
-        image.save(path)
+        _atomic_save_image(path, image)
         return path
 
     def write_result(self, **payload: Any) -> Path:
@@ -125,3 +127,56 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        tmp_path = Path(handle.name)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    try:
+        tmp_path.replace(path)
+    except Exception:
+        _unlink_if_exists(tmp_path)
+        raise
+
+
+def _atomic_save_image(path: Path, image: Image.Image) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=path.suffix or ".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        tmp_path = Path(handle.name)
+
+    try:
+        image.save(tmp_path)
+        tmp_path.replace(path)
+    except Exception:
+        _unlink_if_exists(tmp_path)
+        raise
+
+
+def _unlink_if_exists(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass

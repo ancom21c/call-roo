@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -34,6 +35,24 @@ class ArtifactManagerTest(unittest.TestCase):
             input_payload = json.loads((job.root / "input.json").read_text("utf-8"))
             self.assertEqual(input_payload["raw_input"], "\n")
             self.assertTrue(input_payload["dry_run"])
+
+    def test_write_json_preserves_existing_file_if_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ArtifactManager(Path(tmp))
+            job = manager.create_job(
+                triggered_at=datetime(2026, 4, 1, 20, 0, 0),
+                raw_input="\n",
+                dry_run=True,
+            )
+            job.write_json("result.json", {"status": "old"})
+
+            with patch.object(Path, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    job.write_json("result.json", {"status": "new"})
+
+            result_payload = json.loads((job.root / "result.json").read_text("utf-8"))
+            self.assertEqual(result_payload, {"status": "old"})
+            self.assertEqual(list(job.root.glob(".result.json.*.tmp")), [])
 
     def test_create_job_writes_trigger_metadata_when_provided(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

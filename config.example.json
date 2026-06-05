@@ -1,0 +1,429 @@
+{
+  "assets_dir": "assets",
+  "output": {
+    "logs_dir": "logs",
+    "outputs_dir": "outputs",
+    "log_filename": "callroo-printer.log"
+  },
+  "cooldown_seconds": 60,
+  "cooldown_on_trigger": true,
+  "trailing_feed_lines": 4,
+  "dashboard": {
+    "edit_token": "REPLACE_WITH_DASHBOARD_EDIT_TOKEN"
+  },
+  "input": {
+    "stdin_enabled": true,
+    "linux_event_enabled": false,
+    "linux_event_paths": [
+      "/dev/input/by-id/your-button-event-kbd"
+    ],
+    "linux_event_keycodes": [
+      28,
+      96
+    ]
+  },
+  "audio": {
+    "launch_sounds": [
+      {
+        "file": "clip.wav",
+        "weight": 1.0
+      }
+    ],
+    "launch_sound_volume": 1.0,
+    "event_volume": 1.0,
+    "aplay_device": null,
+    "printer_connected_file": null,
+    "printer_failed_file": null,
+    "print_completed_file": null
+  },
+  "bluetooth": {
+    "backend": "rfcomm",
+    "mac_address": "REPLACE_WITH_PRINTER_MAC",
+    "channel": null,
+    "channel_candidates": [
+      1,
+      6
+    ],
+    "auto_detect_channel": true,
+    "connect_timeout_seconds": 8.0,
+    "reconnect_delay_seconds": 5.0,
+    "keepalive_interval_seconds": 5.0,
+    "keepalive_timeout_seconds": 3.0,
+    "keepalive_hex": "1f1111",
+    "keepalive_response_bytes": 3,
+    "adapter_name": "hci0,hci1",
+    "disabled_adapter_names": [],
+    "adapter_reset_after_failures": 5,
+    "adapter_reset_cooldown_seconds": 60.0,
+    "timiniprint_repo": "vendor/TiMini-Print",
+    "timiniprint_python": null,
+    "timiniprint_cli": null,
+    "timiniprint_darkness": null,
+    "timiniprint_direct_y_scale": 1.0
+  },
+  "llm": [
+    {
+      "name": "fortune-haiku",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "너는 오늘의콜루용 초단문 운세 편집자다. 매번 운의 세기와 방향을 선명하게 고르고, 생활 속 사물과 실제 사건으로 3행을 만든다. 반드시 JSON 객체 하나만 반환한다. tag는 제공된 후보 중 하나를 정확히 고른다.",
+      "prompt": "랜덤 운세를 작성해줘. 출력은 {\"fortune\":\"...\",\"tag\":\"...\"} JSON 객체 하나뿐이다. fortune은 정확히 3행, 전체 55자 이하. 1행은 \"대길:\", \"소길:\", \"흉:\", \"반전:\", \"공짜:\", \"망함:\" 중 하나와 구체적 사물. 2행은 바로 상상되는 생활 사건. 3행은 짧은 처방이나 결론. 어휘는 장소, 물건, 행동, 결과 중심으로 고른다. tag는 다음 후보 중 하나를 그대로 쓴다: 여유, 발끈, 울먹, 식은땀, 번뜩, 삐끗, 가자, 망함, 행운.",
+      "response_tag_key": "tag",
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각은 배경으로만 쓰고, 날짜나 숫자를 본문에 직접 쓰지 마.",
+      "cleaned_examples_pre": "최근 출력 기록:",
+      "cleaned_examples_post": "이번 출력은 새 등급, 새 사물, 새 사건, 새 결말 어미로 설계한다.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key": null,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.95,
+      "max_tokens": 160,
+      "timeout_seconds": 25.0,
+      "fallback_text": "망함: 프린터\n운세 서버가 삐끗함\n한 번 더 눌러봐",
+      "tags": {
+        "여유": [
+          "hallway-01.png"
+        ],
+        "발끈": [
+          "hallway-02.png"
+        ],
+        "울먹": [
+          "mug-01.png"
+        ],
+        "식은땀": [
+          "sink-01.png"
+        ],
+        "번뜩": [
+          "vending-01.png"
+        ],
+        "삐끗": [
+          "vending-02.png"
+        ],
+        "가자": [
+          "corridor-01.png"
+        ],
+        "망함": [
+          "kettle-01.png"
+        ],
+        "행운": [
+          "mug-02.png"
+        ]
+      },
+      "models": [
+        {
+          "name": "primary",
+          "endpoint": "https://your-llm-endpoint.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        },
+        {
+          "name": "qwen-fallback",
+          "endpoint": "https://your-fallback-llm.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        }
+      ]
+    },
+    {
+      "name": "fortune-star",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "너는 오하아사풍 별자리 랭킹 운세 편집자다. 순위에 따라 득, 반전, 주의의 온도를 분명히 나누고 방송풍 압축 문장으로 쓴다. 반드시 JSON 객체 하나만 반환한다. tag는 제공된 후보 중 하나를 정확히 고른다.",
+      "prompt": "오하아사풍 별자리 운세를 작성해줘. 출력은 {\"fortune\":\"...\",\"tag\":\"...\"} JSON 객체 하나뿐이다. fortune은 정확히 3행, 전체 55자 이하. 1행은 \"OO자리 N위\". 별자리는 양, 황소, 쌍둥이, 게, 사자, 처녀, 천칭, 전갈, 사수, 염소, 물병, 물고기 중 하나. N은 1부터 12. 2행은 \"득:\", \"반전:\", \"주의:\" 중 하나로 시작하고 18자 이하. 1~3위는 득, 4~8위는 반전, 9~12위는 주의. 3행은 \"럭키: OO\" 또는 \"금물: OO\". tag는 다음 후보 중 하나를 그대로 쓴다: 여유, 발끈, 울먹, 식은땀, 번뜩, 삐끗, 가자, 망함, 행운.",
+      "response_tag_key": "tag",
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각은 배경으로만 쓰고, 날짜나 숫자를 본문에 직접 쓰지 마.",
+      "cleaned_examples_pre": "최근 별자리 기록:",
+      "cleaned_examples_post": "이번 출력은 다른 별자리, 순위, 사건, 럭키/금물 조합으로 짠다.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key": null,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.9,
+      "max_tokens": 160,
+      "timeout_seconds": 25.0,
+      "fallback_text": "전갈자리 12위\n주의: 서버가 삐끗\n금물: 재촉",
+      "tags": {
+        "여유": [
+          "hallway-01.png"
+        ],
+        "발끈": [
+          "hallway-02.png"
+        ],
+        "울먹": [
+          "mug-01.png"
+        ],
+        "식은땀": [
+          "sink-01.png"
+        ],
+        "번뜩": [
+          "vending-01.png"
+        ],
+        "삐끗": [
+          "vending-02.png"
+        ],
+        "가자": [
+          "corridor-01.png"
+        ],
+        "망함": [
+          "kettle-01.png"
+        ],
+        "행운": [
+          "mug-02.png"
+        ]
+      },
+      "models": [
+        {
+          "name": "primary",
+          "endpoint": "https://your-llm-endpoint.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.9,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        },
+        {
+          "name": "qwen-fallback",
+          "endpoint": "https://your-fallback-llm.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.9,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        }
+      ]
+    },
+    {
+      "name": "fortune-zodiac",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "너는 12지 띠별 초단문 운세 편집자다. 운수명으로 흐름을 먼저 고르고, 손에 잡히는 사건과 처방으로 마무리한다. 좋은 운, 꼬이는 운, 뒤집히는 운을 섞어 쓴다. 반드시 JSON 객체 하나만 반환한다. tag는 제공된 후보 중 하나를 정확히 고른다.",
+      "prompt": "12지 띠 운세를 작성해줘. 출력은 {\"fortune\":\"...\",\"tag\":\"...\"} JSON 객체 하나뿐이다. fortune은 정확히 3행, 전체 55자 이하. 1행은 \"OO띠 운수명\". 띠는 쥐, 소, 호랑이, 토끼, 용, 뱀, 말, 양, 원숭이, 닭, 개, 돼지 중 하나. 운수명은 대길운, 흉운, 반전운, 공짜운, 분실운, 화해운, 지연운 중 하나. 2행은 구체적 생활 사건 18자 이하. 3행은 \"처방: OO\" 또는 \"금물: OO\". tag는 다음 후보 중 하나를 그대로 쓴다: 여유, 발끈, 울먹, 식은땀, 번뜩, 삐끗, 가자, 망함, 행운.",
+      "response_tag_key": "tag",
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각은 배경으로만 쓰고, 날짜나 숫자를 본문에 직접 쓰지 마.",
+      "cleaned_examples_pre": "최근 띠 운세 기록:",
+      "cleaned_examples_post": "이번 출력은 다른 띠, 운수명, 사건, 처방/금물 조합으로 짠다.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key": null,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.9,
+      "max_tokens": 160,
+      "timeout_seconds": 25.0,
+      "fallback_text": "닭띠 분실운\n운세 서버가 잠깐 숨음\n금물: 재촉",
+      "tags": {
+        "여유": [
+          "hallway-01.png"
+        ],
+        "발끈": [
+          "hallway-02.png"
+        ],
+        "울먹": [
+          "mug-01.png"
+        ],
+        "식은땀": [
+          "sink-01.png"
+        ],
+        "번뜩": [
+          "vending-01.png"
+        ],
+        "삐끗": [
+          "vending-02.png"
+        ],
+        "가자": [
+          "corridor-01.png"
+        ],
+        "망함": [
+          "kettle-01.png"
+        ],
+        "행운": [
+          "mug-02.png"
+        ]
+      },
+      "models": [
+        {
+          "name": "primary",
+          "endpoint": "https://your-llm-endpoint.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.9,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        },
+        {
+          "name": "qwen-fallback",
+          "endpoint": "https://your-fallback-llm.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.9,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        }
+      ]
+    },
+    {
+      "name": "gigachad",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "너는 GIGACHAD식 초단문 실행 조언 편집자다. 변명 없이 바로 움직이게 만드는 단단한 한국어 3행을 쓴다. 반드시 JSON 객체 하나만 반환한다. tag는 gigachad만 쓴다.",
+      "prompt": "GIGACHAD 실행 조언을 작성해줘. 출력은 {\"fortune\":\"...\",\"tag\":\"...\"} JSON 객체 하나뿐이다. fortune은 정확히 3행, 전체 55자 이하. 1행은 강한 선언, 2행은 지금 할 행동, 3행은 짧은 결론. tag는 반드시 gigachad로 쓴다.",
+      "response_tag_key": "tag",
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 실행 조언 기준 시각:",
+      "current_time_hint_post": "위 시각은 긴박감의 배경으로만 쓰고, 날짜나 숫자를 본문에 직접 쓰지 마.",
+      "cleaned_examples_pre": "최근 GIGACHAD 출력 기록:",
+      "cleaned_examples_post": "이번 출력은 다른 행동, 다른 명령형, 다른 결말 어미로 짠다.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key": null,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.95,
+      "max_tokens": 160,
+      "timeout_seconds": 25.0,
+      "fallback_text": "GIGACHAD\n멈추지 말고 다시 눌러\n바로 간다",
+      "tags": {
+        "gigachad": [
+          "gigachad.jpg"
+        ]
+      },
+      "models": [
+        {
+          "name": "primary",
+          "endpoint": "https://your-llm-endpoint.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        },
+        {
+          "name": "qwen-fallback",
+          "endpoint": "https://your-fallback-llm.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        }
+      ]
+    },
+    {
+      "name": "오늘의 한 가지",
+      "weight": 1.0,
+      "endpoint": "https://your-llm-endpoint.example/v1/",
+      "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+      "system_prompt": "너는 오늘 바로 하나만 골라 실행하게 해주는 초단문 추천 편집자다. 음식, 몸풀기, 감사 표현, 작은 정리, 연락, 휴식 같은 일상 항목 중 하나를 고르고, 구체적이고 가볍게 실행 가능한 3행을 쓴다. 반드시 JSON 객체 하나만 반환한다. tag는 제공된 후보 중 하나를 정확히 고른다.",
+      "prompt": "오늘의 한 가지를 추천해줘. 출력은 {\"fortune\":\"...\",\"tag\":\"...\"} JSON 객체 하나뿐이다. fortune은 정확히 3행, 전체 80자 이하. 1행은 아래 후보 중 하나의 제목과 추천값을 쓴다. 후보: 오늘의 간식, 오늘의 점심메뉴, 오늘의 저녁메뉴, 오늘의 건강체조, 오늘의 감사 멘트, 오늘의 산책 미션, 오늘의 정리할 물건, 오늘의 연락할 사람, 오늘의 물 마시기, 오늘의 책 한 줄, 오늘의 작은 친절, 오늘의 퇴근 후 루틴. 2행은 왜 지금 어울리는지 한 문장. 3행은 바로 실행할 짧은 행동. 매번 후보, 추천값, 이유, 행동을 새롭게 고른다. tag는 다음 후보 중 하나를 그대로 쓴다: 여유, 발끈, 울먹, 식은땀, 번뜩, 삐끗, 가자, 망함, 행운.",
+      "response_tag_key": "tag",
+      "current_time_hint_format": "%Y-%m-%d %H:%M:%S %Z",
+      "current_time_hint_pre": "이번 운세 기준 시각:",
+      "current_time_hint_post": "위 시각은 배경으로만 쓰고, 날짜나 숫자를 본문에 직접 쓰지 마.",
+      "cleaned_examples_pre": "최근 출력 기록:",
+      "cleaned_examples_post": "이번 출력은 새 등급, 새 사물, 새 사건, 새 결말 어미로 설계한다.",
+      "response_json_key": "fortune",
+      "enable_thinking": false,
+      "api_key": null,
+      "api_key_env": "SPARK_LLM_API_KEY",
+      "temperature": 0.95,
+      "max_tokens": 160,
+      "timeout_seconds": 25.0,
+      "fallback_text": "오늘의 간식: 바나나\n손에 잡히고 부담이 적다\n물 한 컵과 같이 먹기",
+      "tags": {
+        "여유": [
+          "hallway-01.png"
+        ],
+        "발끈": [
+          "hallway-02.png"
+        ],
+        "울먹": [
+          "mug-01.png"
+        ],
+        "식은땀": [
+          "sink-01.png"
+        ],
+        "번뜩": [
+          "vending-01.png"
+        ],
+        "삐끗": [
+          "vending-02.png"
+        ],
+        "가자": [
+          "corridor-01.png"
+        ],
+        "망함": [
+          "kettle-01.png"
+        ],
+        "행운": [
+          "mug-02.png"
+        ]
+      },
+      "models": [
+        {
+          "name": "primary",
+          "endpoint": "https://your-llm-endpoint.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        },
+        {
+          "name": "qwen-fallback",
+          "endpoint": "https://your-fallback-llm.example/v1/",
+          "model": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "enable_thinking": false,
+          "api_key": null,
+          "api_key_env": "SPARK_LLM_API_KEY",
+          "temperature": 0.95,
+          "max_tokens": 160,
+          "timeout_seconds": 25.0
+        }
+      ]
+    }
+  ],
+  "layout": {
+    "paper_width_px": 384,
+    "side_margin_px": 20,
+    "section_gap_px": 16,
+    "image_max_height_px": 260,
+    "title_font_size": 28,
+    "body_font_size": 24,
+    "timestamp_font_size": 18,
+    "font_path": "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "threshold": 160,
+    "max_fortune_chars": 100
+  }
+}

@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.venv/
+vendor/TiMini-Print/.venv/
+*.pyc
+logs/
+outputs/
+assets/*
+!assets/.gitkeep
+config.json
+config.local.json
+deploy/systemd/callroo-printer.env

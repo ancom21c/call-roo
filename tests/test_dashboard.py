@@ -32,6 +32,13 @@ class DashboardHtmlTest(unittest.TestCase):
             _DASHBOARD_HTML,
         )
 
+    def test_dashboard_renders_bluetooth_status_card(self) -> None:
+        self.assertIn('label: "Bluetooth Status"', _DASHBOARD_HTML)
+        self.assertIn(
+            "renderRuntime(snapshot.runtime || {}, snapshot.bluetooth || {});",
+            _DASHBOARD_HTML,
+        )
+
 
 class DashboardSnapshotBuilderTest(unittest.TestCase):
     def test_snapshot_filters_previews_by_selected_date(self) -> None:
@@ -150,6 +157,46 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertFalse(loose_audio["registered"])
             self.assertEqual(builder.resolve_asset_file("clip.wav"), (root / "assets" / "clip.wav").resolve())
             self.assertIsNone(builder.resolve_asset_file("../config.json"))
+
+    def test_snapshot_includes_bluetooth_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            status_path = config.output.outputs_dir / "bluetooth-status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "status": "retrying",
+                        "message": "Printer connection failed; retrying.",
+                        "updated_at": "2026-06-05T20:05:48+09:00",
+                        "backend": "timiniprint_cli_direct",
+                        "mac_address": "00:11:22:33:44:55",
+                        "adapter_name": "hci0",
+                        "failure_count": 2,
+                        "last_error": "Timed out connecting",
+                        "keepalive_supported": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            builder = DashboardSnapshotBuilder(config)
+
+            with patch(
+                "callroo_printer.dashboard.subprocess.run",
+                return_value=_systemd_status("active", "running"),
+            ):
+                snapshot = builder.build_snapshot()
+
+            bluetooth = snapshot["bluetooth"]
+            self.assertTrue(bluetooth["exists"])
+            self.assertEqual(bluetooth["status"], "retrying")
+            self.assertEqual(bluetooth["message"], "Printer connection failed; retrying.")
+            self.assertEqual(bluetooth["backend"], "timiniprint_cli_direct")
+            self.assertEqual(bluetooth["mac_address"], "00:11:22:33:44:55")
+            self.assertEqual(bluetooth["adapter_name"], "hci0")
+            self.assertEqual(bluetooth["failure_count"], 2)
+            self.assertEqual(bluetooth["last_error"], "Timed out connecting")
+            self.assertTrue(bluetooth["keepalive_supported"])
 
     def test_snapshot_uses_cache_until_cleared(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

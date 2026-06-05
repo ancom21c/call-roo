@@ -67,6 +67,7 @@ class FortunePrinterService:
         self._last_bluetooth_reset_at = 0.0
         self._printer_failure_announced = False
         self._printer_connected_once = False
+        self._last_bluetooth_success_at: str | None = None
 
     def run(self) -> None:
         LOGGER.info("Discovered %s asset(s)", len(self._discover_assets(self.config.assets_dir)))
@@ -81,6 +82,10 @@ class FortunePrinterService:
             )
             dashboard_monitor.start()
             if not self.dry_run:
+                self._write_bluetooth_status(
+                    "starting",
+                    message="Preparing Bluetooth printer connection.",
+                )
                 _disable_configured_bluetooth_adapters(self.config.bluetooth)
                 self._wait_for_printer_ready()
                 if self.printer.keepalive_supported:
@@ -91,6 +96,11 @@ class FortunePrinterService:
                     )
                     keepalive_thread.start()
                     LOGGER.info("Bluetooth keep-alive started.")
+            else:
+                self._write_bluetooth_status(
+                    "disabled",
+                    message="Dry-run mode is enabled; Bluetooth printing is disabled.",
+                )
 
             active_inputs = ["dashboard"]
             input_monitor = TriggerSourceMonitor(self.config.input)
@@ -113,6 +123,10 @@ class FortunePrinterService:
             LOGGER.info("Shutdown requested, closing service.")
         finally:
             self._stop_event.set()
+            self._write_bluetooth_status(
+                "stopped",
+                message="Printer service is shutting down.",
+            )
             if input_monitor is not None:
                 input_monitor.close()
             if dashboard_monitor is not None:
@@ -129,6 +143,10 @@ class FortunePrinterService:
     def _wait_for_printer_ready(self) -> None:
         LOGGER.info("Waiting for printer connection before enabling triggers.")
         retry_delay = self.config.bluetooth.reconnect_delay_seconds
+        self._write_bluetooth_status(
+            "connecting",
+            message="Waiting for printer connection before enabling triggers.",
+        )
         while True:
             try:
                 self.printer.connect_if_needed()
@@ -139,6 +157,12 @@ class FortunePrinterService:
                     exc,
                     failure_count,
                     retry_delay,
+                )
+                self._write_bluetooth_status(
+                    "retrying",
+                    message=f"Printer connection failed; retrying in {retry_delay:.1f} seconds.",
+                    last_error=str(exc),
+                    failure_count=failure_count,
                 )
                 time.sleep(retry_delay)
                 continue
@@ -334,6 +358,14 @@ class FortunePrinterService:
                     failure_count,
                     self.config.bluetooth.reconnect_delay_seconds,
                 )
+                self._write_bluetooth_status(
+                    "retrying",
+                    message=(
+                        "Bluetooth keep-alive failed; reconnecting before the next retry."
+                    ),
+                    last_error=str(exc),
+                    failure_count=failure_count,
+                )
                 self.printer.close()
                 if self._stop_event.wait(
                     self.config.bluetooth.reconnect_delay_seconds
@@ -345,11 +377,17 @@ class FortunePrinterService:
 
     def _note_bluetooth_success(self) -> None:
         self._consecutive_bluetooth_failures = 0
+        self._last_bluetooth_success_at = datetime.now().astimezone().isoformat()
         should_play_connected_sound = (
             not self._printer_connected_once or self._printer_failure_announced
         )
         self._printer_connected_once = True
         self._printer_failure_announced = False
+        self._write_bluetooth_status(
+            "connected",
+            message="Printer connection is ready.",
+            failure_count=0,
+        )
         if should_play_connected_sound:
             self._play_event_sound("printer_connected")
 
@@ -424,6 +462,39 @@ class FortunePrinterService:
                 ", ".join(adapter_names),
             )
         self._consecutive_bluetooth_failures = 0
+
+    def _write_bluetooth_status(
+        self,
+        status: str,
+        *,
+        message: str,
+        last_error: str = "",
+        failure_count: int | None = None,
+    ) -> None:
+        try:
+            payload: dict[str, object] = {
+                "status": status,
+                "message": message,
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "backend": self.config.bluetooth.backend,
+                "mac_address": self.config.bluetooth.mac_address,
+                "adapter_name": self.config.bluetooth.adapter_name,
+                "failure_count": (
+                    self._consecutive_bluetooth_failures
+                    if failure_count is None
+                    else failure_count
+                ),
+                "last_success_at": self._last_bluetooth_success_at or "",
+                "keepalive_supported": bool(
+                    getattr(self.printer, "keepalive_supported", False)
+                ),
+                "dry_run": self.dry_run,
+            }
+            if last_error:
+                payload["last_error"] = last_error
+            self.artifacts.write_state_json("bluetooth-status.json", payload)
+        except Exception:
+            LOGGER.debug("Failed to write Bluetooth dashboard status.", exc_info=True)
 
     @staticmethod
     def _write_llm_artifacts(job: JobArtifacts, result: LLMCallResult) -> None:

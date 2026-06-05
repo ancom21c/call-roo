@@ -36,6 +36,21 @@ class ArtifactManagerTest(unittest.TestCase):
             self.assertEqual(input_payload["raw_input"], "\n")
             self.assertTrue(input_payload["dry_run"])
 
+    def test_write_state_json_writes_to_output_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ArtifactManager(Path(tmp))
+
+            path = manager.write_state_json(
+                "bluetooth-status.json",
+                {"status": "connected"},
+            )
+
+            self.assertEqual(path, Path(tmp) / "bluetooth-status.json")
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")),
+                {"status": "connected"},
+            )
+
     def test_write_json_preserves_existing_file_if_replace_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manager = ArtifactManager(Path(tmp))

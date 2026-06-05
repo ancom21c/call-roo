@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from callroo_printer.artifacts import ArtifactManager
 from callroo_printer.service import DashboardTriggerMonitor, FortunePrinterService
 
 
@@ -71,6 +72,24 @@ class ServiceBluetoothResetTest(unittest.TestCase):
         service._note_bluetooth_success()
 
         self.assertEqual(service._played_events, ["printer_connected"])
+
+    def test_note_bluetooth_success_writes_dashboard_status(self) -> None:
+        service = _build_service(reset_after_failures=3, reset_cooldown_seconds=30.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            service.artifacts = ArtifactManager(Path(tmp))
+            service.dry_run = False
+
+            service._note_bluetooth_success()
+
+            payload = json.loads(
+                (Path(tmp) / "bluetooth-status.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(payload["status"], "connected")
+        self.assertEqual(payload["backend"], "timiniprint_cli_direct")
+        self.assertEqual(payload["mac_address"], "00:11:22:33:44:55")
+        self.assertEqual(payload["failure_count"], 0)
+        self.assertTrue(payload["last_success_at"])
 
     def test_select_llm_profile_uses_weighted_candidates(self) -> None:
         service = _build_service(reset_after_failures=3, reset_cooldown_seconds=30.0)
@@ -249,6 +268,8 @@ def _build_service(
     service = FortunePrinterService.__new__(FortunePrinterService)
     service.config = SimpleNamespace(
         bluetooth=SimpleNamespace(
+            backend="timiniprint_cli_direct",
+            mac_address="00:11:22:33:44:55",
             adapter_name="hci0",
             disabled_adapter_names=(),
             adapter_reset_after_failures=reset_after_failures,

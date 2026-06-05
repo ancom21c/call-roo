@@ -1170,6 +1170,19 @@ _DASHBOARD_HTML = """<!doctype html>
       return `${Math.round(value / 86400)}일 전`;
     }
 
+    function bluetoothStatusLabel(status) {
+      const labels = {
+        connected: "연결됨",
+        connecting: "연결 대기",
+        retrying: "재시도 중",
+        starting: "시작 중",
+        disabled: "비활성",
+        stopped: "중지됨",
+        unknown: "확인 안 됨",
+      };
+      return labels[status] || status || "확인 안 됨";
+    }
+
     function renderStats(snapshot) {
       const latestJob = snapshot.latest_job;
       const statsGrid = document.getElementById("stats-grid");
@@ -1206,13 +1219,24 @@ _DASHBOARD_HTML = """<!doctype html>
       `).join("");
     }
 
-    function renderRuntime(runtime) {
+    function renderRuntime(runtime, bluetooth) {
       const grid = document.getElementById("runtime-grid");
+      const bluetoothMeta = [
+        bluetooth && bluetooth.message ? bluetooth.message : "",
+        bluetooth && bluetooth.last_error ? `오류: ${bluetooth.last_error}` : "",
+        bluetooth && Number(bluetooth.failure_count) > 0 ? `실패 ${bluetooth.failure_count}회` : "",
+        bluetooth && bluetooth.updated_at ? `갱신 ${formatDateTime(bluetooth.updated_at)}` : "",
+      ].filter(Boolean).join(" · ");
       const cards = [
         {
+          label: "Bluetooth Status",
+          value: bluetoothStatusLabel(bluetooth && bluetooth.status),
+          meta: bluetoothMeta || "상태 보고 없음",
+        },
+        {
           label: "Bluetooth Backend",
-          value: runtime.bluetooth_backend || "-",
-          meta: runtime.bluetooth_target || "-",
+          value: (bluetooth && bluetooth.backend) || runtime.bluetooth_backend || "-",
+          meta: (bluetooth && bluetooth.mac_address) || runtime.bluetooth_target || "-",
         },
         {
           label: "Outputs",
@@ -1815,7 +1839,7 @@ _DASHBOARD_HTML = """<!doctype html>
       syncSettingsAuth(snapshot);
       renderStatus(snapshot);
       renderStats(snapshot);
-      renderRuntime(snapshot.runtime || {});
+      renderRuntime(snapshot.runtime || {}, snapshot.bluetooth || {});
       renderDateChips(snapshot);
       renderPreviews(snapshot);
       renderLogs(snapshot);
@@ -1921,6 +1945,7 @@ class DashboardSnapshotBuilder:
         self.log_lines = log_lines
         self.snapshot_cache_seconds = max(0.0, float(snapshot_cache_seconds))
         self.jobs_dir = config.output.outputs_dir / "jobs"
+        self.bluetooth_status_path = config.output.outputs_dir / "bluetooth-status.json"
         self.log_path = config.output.logs_dir / config.output.log_filename
         self._local_timezone = datetime.now().astimezone().tzinfo or timezone.utc
         self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -1970,6 +1995,7 @@ class DashboardSnapshotBuilder:
             "status_counts": dict(Counter(job["status"] for job in jobs if job["status"])),
             "latest_job": latest_job,
             "runtime": self._build_runtime_summary(),
+            "bluetooth": self._read_bluetooth_status(),
             "service": self._build_service_status(logs, latest_job=latest_job),
             "dashboard": {
                 "settings_token_required": bool(self.config.dashboard.edit_token),
@@ -2372,6 +2398,47 @@ class DashboardSnapshotBuilder:
             "line_count": len(tail_lines),
             "tail_text": "\n".join(tail_lines),
             "last_message": _extract_log_message(last_line),
+        }
+
+    def _read_bluetooth_status(self) -> dict[str, Any]:
+        if not self.bluetooth_status_path.is_file():
+            return {
+                "path": str(self.bluetooth_status_path),
+                "exists": False,
+                "status": "unknown",
+                "message": "Bluetooth status has not been reported yet.",
+                "updated_at": "",
+                "age_seconds": None,
+                "last_error": "",
+                "failure_count": None,
+                "backend": self.config.bluetooth.backend,
+                "mac_address": self.config.bluetooth.mac_address,
+            }
+
+        payload = _read_json_file(self.bluetooth_status_path)
+        updated_at = _parse_datetime(payload.get("updated_at"), self._local_timezone)
+        age_seconds = (
+            max(0.0, (datetime.now(self._local_timezone) - updated_at).total_seconds())
+            if updated_at is not None
+            else None
+        )
+        status = _first_text(payload.get("status")) or "unknown"
+        return {
+            "path": str(self.bluetooth_status_path),
+            "exists": True,
+            "status": status,
+            "message": _first_text(payload.get("message")) or "",
+            "updated_at": updated_at.isoformat() if updated_at is not None else "",
+            "age_seconds": age_seconds,
+            "last_error": _first_text(payload.get("last_error")) or "",
+            "failure_count": _optional_number(payload.get("failure_count")),
+            "backend": _first_text(payload.get("backend")) or self.config.bluetooth.backend,
+            "mac_address": _first_text(payload.get("mac_address")) or self.config.bluetooth.mac_address,
+            "adapter_name": _first_text(payload.get("adapter_name")) or "",
+            "last_success_at": _first_text(payload.get("last_success_at")) or "",
+            "keepalive_supported": bool(payload.get("keepalive_supported", False)),
+            "dry_run": bool(payload.get("dry_run", False)),
+            "stale": bool(age_seconds is not None and age_seconds > LOG_STALE_SECONDS),
         }
 
     def _serialize_llm_profiles(self) -> list[dict[str, Any]]:
@@ -3105,6 +3172,14 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _optional_number(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return value
+    return None
 
 
 def _first_text(*values: Any) -> str | None:

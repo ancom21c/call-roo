@@ -72,6 +72,14 @@ class ArtifactManager:
                 break
         return tuple(fortunes)
 
+    def write_state_json(self, filename: str, payload: dict[str, Any]) -> Path:
+        path = self.output_root / filename
+        _atomic_write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+        return path
+
 
 @dataclass(frozen=True)
 class JobArtifacts:

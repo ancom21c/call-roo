@@ -341,6 +341,21 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertEqual(payload["request_id"], result["request_id"])
             self.assertEqual(payload["note"], "test")
 
+    def test_queue_dashboard_print_repairs_missing_jsonl_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            trigger_path.write_text('{"request_id": "truncated"', encoding="utf-8")
+
+            result = _queue_dashboard_print(config, {"note": "after-truncation"})
+
+            records = trigger_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(records[0], '{"request_id": "truncated"')
+            payload = json.loads(records[1])
+            self.assertEqual(payload["request_id"], result["request_id"])
+            self.assertEqual(payload["note"], "after-truncation")
+
 
 def _write_config(root: Path):
     (root / "assets").mkdir()

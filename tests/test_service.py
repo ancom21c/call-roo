@@ -164,6 +164,74 @@ class ServiceBluetoothResetTest(unittest.TestCase):
         self.assertEqual(event.details["request_id"], "abc123")
         self.assertEqual(event.details["note"], "manual")
 
+    def test_dashboard_trigger_monitor_ignores_malformed_trigger_lines(self) -> None:
+        self.assertIsNone(DashboardTriggerMonitor._parse_line("{not json\n"))
+        self.assertIsNone(DashboardTriggerMonitor._parse_line("[]\n"))
+        self.assertIsNone(DashboardTriggerMonitor._parse_line("{}\n"))
+
+    def test_dashboard_trigger_monitor_replays_only_unprocessed_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trigger_path = root / "dashboard-triggers.jsonl"
+            trigger_path.write_text(
+                "\n".join(
+                    json.dumps(payload)
+                    for payload in (
+                        {
+                            "request_id": "already-handled",
+                            "requested_at": "2026-06-05T10:00:00+09:00",
+                        },
+                        {
+                            "request_id": "pending",
+                            "requested_at": "2026-06-05T10:01:00+09:00",
+                            "note": "queued while down",
+                        },
+                        {
+                            "request_id": "pending",
+                            "requested_at": "2026-06-05T10:01:00+09:00",
+                            "note": "duplicate",
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            job_dir = root / "jobs" / "20260605-100000-11111111"
+            job_dir.mkdir(parents=True)
+            (job_dir / "input.json").write_text(
+                json.dumps(
+                    {
+                        "trigger_source": "dashboard",
+                        "trigger_details": {"request_id": "already-handled"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            monitor = DashboardTriggerMonitor(trigger_path)
+            position = monitor._enqueue_existing_unprocessed_triggers()
+
+            self.assertEqual(position, trigger_path.stat().st_size)
+            event = monitor.next_trigger(timeout_seconds=0.0)
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.details["request_id"], "pending")
+            self.assertEqual(event.details["note"], "queued while down")
+            self.assertIsNone(monitor.next_trigger(timeout_seconds=0.0))
+
+    def test_dashboard_trigger_monitor_waits_for_partial_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trigger_path = Path(tmp) / "dashboard-triggers.jsonl"
+            trigger_path.write_text(
+                json.dumps({"request_id": "partial"}),
+                encoding="utf-8",
+            )
+
+            monitor = DashboardTriggerMonitor(trigger_path)
+
+            self.assertEqual(monitor._enqueue_existing_unprocessed_triggers(), 0)
+            self.assertIsNone(monitor.next_trigger(timeout_seconds=0.0))
+
 
 class _FakePrinter:
     def __init__(self) -> None:

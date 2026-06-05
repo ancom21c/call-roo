@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import shlex
 import subprocess
 import time
@@ -2697,14 +2698,24 @@ def _queue_dashboard_print(config: AppConfig, payload: dict[str, Any]) -> dict[s
         "raw_input": "\n",
         "note": _optional_text(payload.get("note")) or "dashboard",
     }
-    with trigger_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(trigger_payload, ensure_ascii=False) + "\n")
+    _append_jsonl_record(trigger_path, trigger_payload)
     return {
         "ok": True,
         "request_id": request_id,
         "queued_at": requested_at,
         "trigger_path": str(trigger_path),
     }
+
+
+def _append_jsonl_record(path: Path, payload: dict[str, Any]) -> None:
+    line = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+    with path.open("ab+") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() > 0:
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write(line)
 
 
 def _restart_printer_service(service_name: str = SERVICE_NAME) -> dict[str, Any]:

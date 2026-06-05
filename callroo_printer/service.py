@@ -575,9 +575,11 @@ class FortunePrinterService:
 class DashboardTriggerMonitor:
     def __init__(self, trigger_path: Path):
         self.trigger_path = trigger_path
+        self.jobs_dir = self.trigger_path.parent / "jobs"
         self._queue: queue.Queue[TriggerEvent] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._seen_request_ids: set[str] = set()
 
     def start(self) -> None:
         self.trigger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,26 +604,62 @@ class DashboardTriggerMonitor:
             self._thread.join(timeout=0.5)
 
     def _loop(self) -> None:
-        position = self.trigger_path.stat().st_size
+        position = self._enqueue_existing_unprocessed_triggers()
         while not self._stop_event.is_set():
             try:
                 with self.trigger_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    if position > self.trigger_path.stat().st_size:
+                        position = 0
                     handle.seek(position)
                     while not self._stop_event.is_set():
+                        line_start = handle.tell()
                         line = handle.readline()
                         if not line:
                             position = handle.tell()
                             break
-                        event = self._parse_line(line)
-                        if event is not None:
-                            self._queue.put(event)
-                    position = handle.tell()
+                        if not line.endswith("\n"):
+                            position = line_start
+                            break
+                        self._enqueue_line(line)
+                        position = handle.tell()
             except FileNotFoundError:
                 self.trigger_path.touch(exist_ok=True)
                 position = 0
             except OSError as exc:
                 LOGGER.warning("Dashboard trigger file read failed: %s", exc)
             self._stop_event.wait(0.25)
+
+    def _enqueue_existing_unprocessed_triggers(self) -> int:
+        self._seen_request_ids.update(_load_processed_dashboard_request_ids(self.jobs_dir))
+        position = 0
+        try:
+            with self.trigger_path.open("r", encoding="utf-8", errors="replace") as handle:
+                while True:
+                    line_start = handle.tell()
+                    line = handle.readline()
+                    if not line:
+                        return handle.tell()
+                    if not line.endswith("\n"):
+                        return line_start
+                    self._enqueue_line(line)
+                    position = handle.tell()
+        except FileNotFoundError:
+            self.trigger_path.touch(exist_ok=True)
+            return 0
+        except OSError as exc:
+            LOGGER.warning("Dashboard trigger file bootstrap read failed: %s", exc)
+            return position
+
+    def _enqueue_line(self, line: str) -> None:
+        event = self._parse_line(line)
+        if event is None:
+            return
+        request_id = str(event.details.get("request_id", "")).strip()
+        if request_id:
+            if request_id in self._seen_request_ids:
+                return
+            self._seen_request_ids.add(request_id)
+        self._queue.put(event)
 
     @staticmethod
     def _parse_line(line: str) -> TriggerEvent | None:
@@ -631,18 +669,54 @@ class DashboardTriggerMonitor:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
-            payload = {}
+            LOGGER.warning("Ignoring malformed dashboard trigger line.")
+            return None
         if not isinstance(payload, dict):
-            payload = {}
+            LOGGER.warning("Ignoring non-object dashboard trigger line.")
+            return None
+        request_id = str(payload.get("request_id", "")).strip()
+        if not request_id:
+            LOGGER.warning("Ignoring dashboard trigger line without request_id.")
+            return None
         return TriggerEvent(
             raw_input=str(payload.get("raw_input", "\n")),
             source="dashboard",
             details={
                 "requested_at": str(payload.get("requested_at", "")),
-                "request_id": str(payload.get("request_id", "")),
+                "request_id": request_id,
                 "note": str(payload.get("note", "")),
             },
         )
+
+
+def _load_processed_dashboard_request_ids(jobs_dir: Path) -> set[str]:
+    if not jobs_dir.is_dir():
+        return set()
+
+    request_ids: set[str] = set()
+    for job_dir in jobs_dir.iterdir():
+        if not job_dir.is_dir():
+            continue
+        payload = _load_json_object(job_dir / "input.json")
+        details = payload.get("trigger_details")
+        if not isinstance(details, dict):
+            continue
+        request_id = details.get("request_id")
+        if isinstance(request_id, str) and request_id.strip():
+            request_ids.add(request_id.strip())
+    return request_ids
+
+
+def _load_json_object(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
 
 def _format_llm_time_hint(triggered_at: datetime, format_string: str) -> str:

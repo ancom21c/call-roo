@@ -86,6 +86,7 @@ class LayoutConfig:
     side_margin_px: int
     section_gap_px: int
     image_max_height_px: int
+    title_icon_file: Optional[Path]
     title_font_size: int
     body_font_size: int
     timestamp_font_size: int
@@ -269,6 +270,10 @@ def load_config(config_path: Path) -> AppConfig:
         side_margin_px=int(layout_section.get("side_margin_px", 20)),
         section_gap_px=int(layout_section.get("section_gap_px", 16)),
         image_max_height_px=int(layout_section.get("image_max_height_px", 260)),
+        title_icon_file=_optional_asset_path(
+            assets_dir,
+            layout_section.get("title_icon_file"),
+        ),
         title_font_size=int(layout_section.get("title_font_size", 28)),
         body_font_size=int(layout_section.get("body_font_size", 24)),
         timestamp_font_size=int(layout_section.get("timestamp_font_size", 18)),
@@ -317,11 +322,21 @@ def _optional_path(base_dir: Path, value: Any) -> Optional[Path]:
     return _resolve_path(base_dir, value)
 
 
-def _resolve_audio_clip_path(assets_dir: Path, value: Any) -> Path:
+def _resolve_asset_path(assets_dir: Path, value: Any) -> Path:
     path = Path(str(value)).expanduser()
     if path.is_absolute():
         return path
     return (assets_dir / path).resolve()
+
+
+def _optional_asset_path(assets_dir: Path, value: Any) -> Optional[Path]:
+    if value in (None, ""):
+        return None
+    return _resolve_asset_path(assets_dir, value)
+
+
+def _resolve_audio_clip_path(assets_dir: Path, value: Any) -> Path:
+    return _resolve_asset_path(assets_dir, value)
 
 
 def _optional_audio_clip_path(assets_dir: Path, value: Any) -> Optional[Path]:

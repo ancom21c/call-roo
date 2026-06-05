@@ -17,6 +17,7 @@ TEXT_BOX_PADDING_X = 14
 TEXT_BOX_PADDING_Y = 12
 TEXT_BOX_RADIUS = 10
 TEXT_BOX_INSET = 4
+TITLE_ICON_GAP_RATIO = 0.32
 NO_LINE_START_CHARS = tuple(".,!?;:)]}）］｝〉》」』”’、。，！？：；…")
 
 
@@ -44,6 +45,9 @@ def compose_ticket(
 
     fortune_lines = wrap_text_by_width(fortune_text, body_font, text_width)
     title_bbox = measuring_draw.multiline_textbbox((0, 0), title, font=title_font)
+    title_height = _bbox_height(title_bbox)
+    title_icon = _prepare_title_icon(config.title_icon_file, title_height)
+    title_row_height = max(title_height, title_icon.height if title_icon else 0)
     tag_bbox = measuring_draw.multiline_textbbox((0, 0), tag_text, font=tag_font)
     fortune_bbox = measuring_draw.multiline_textbbox(
         (0, 0), fortune_lines, font=body_font, spacing=6
@@ -56,7 +60,7 @@ def compose_ticket(
 
     total_height = (
         config.side_margin_px
-        + _bbox_height(title_bbox)
+        + title_row_height
         + config.section_gap_px
         + asset_image.height
         + (tag_gap_px + _bbox_height(tag_bbox) if tag_text else 0)
@@ -72,8 +76,17 @@ def compose_ticket(
     draw = ImageDraw.Draw(canvas)
     cursor_y = config.side_margin_px
 
-    _draw_centered_text(draw, title, title_font, cursor_y, config.paper_width_px)
-    cursor_y += _bbox_height(title_bbox)
+    _draw_title_row(
+        draw,
+        title,
+        title_font,
+        title_bbox,
+        title_icon,
+        cursor_y,
+        config.paper_width_px,
+        title_row_height,
+    )
+    cursor_y += title_row_height
     cursor_y += config.section_gap_px
 
     canvas.paste(asset_image, (config.side_margin_px, cursor_y))
@@ -173,6 +186,51 @@ def _prepare_asset(asset_path: Path, max_width: int, max_height: int) -> Image.I
         return canvas
 
 
+def _prepare_title_icon(icon_path: Path | None, target_size: int) -> Image.Image | None:
+    if icon_path is None or target_size <= 0:
+        return None
+    try:
+        with Image.open(icon_path) as image:
+            rgba = image.convert("RGBA")
+    except OSError:
+        return None
+
+    fitted = ImageOps.contain(rgba, (target_size, target_size))
+    canvas = Image.new("L", (target_size, target_size), color=255)
+    grayscale = fitted.convert("L")
+    alpha = fitted.getchannel("A")
+    offset = (
+        (target_size - fitted.width) // 2,
+        (target_size - fitted.height) // 2,
+    )
+    canvas.paste(grayscale, offset, alpha)
+    return canvas
+
+
+def _draw_title_row(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    text_bbox: tuple[int, int, int, int],
+    icon: Image.Image | None,
+    y: int,
+    canvas_width: int,
+    row_height: int,
+) -> None:
+    text_width = _bbox_width(text_bbox)
+    text_height = _bbox_height(text_bbox)
+    icon_gap = max(4, round(text_height * TITLE_ICON_GAP_RATIO)) if icon else 0
+    group_width = text_width + (icon_gap + icon.width if icon else 0)
+    start_x = (canvas_width - group_width) // 2
+    text_x = start_x - text_bbox[0]
+    text_y = y + ((row_height - text_height) // 2) - text_bbox[1]
+    draw.text((text_x, text_y), text, fill=0, font=font)
+    if icon:
+        icon_x = start_x + text_width + icon_gap
+        icon_y = y + ((row_height - icon.height) // 2)
+        draw.bitmap((icon_x, icon_y), ImageOps.invert(icon), fill=0)
+
+
 def _draw_centered_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -257,3 +315,7 @@ def _text_width(
 
 def _bbox_height(bbox: tuple[int, int, int, int]) -> int:
     return bbox[3] - bbox[1]
+
+
+def _bbox_width(bbox: tuple[int, int, int, int]) -> int:
+    return bbox[2] - bbox[0]

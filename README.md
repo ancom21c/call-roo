@@ -224,6 +224,7 @@ sudo systemctl enable --now callroo-dashboard.service
 - `llm[].system_prompt`, `llm[].prompt`: 모델에 전달할 지시문
 - `llm[].models`: 순서대로 시도할 모델 후보
 - `llm[].tags`: 태그명에서 이미지 파일 목록으로 가는 맵
+- `layout.title_icon_file`: 타이틀 오른쪽에 붙일 아이콘 파일. 상대 경로면 `assets_dir` 기준
 - `layout.font_path`: 한글 폰트 경로
 - `layout.paper_width_px`, `layout.side_margin_px`: 출력 폭과 좌우 여백
 - `output.logs_dir`, `output.outputs_dir`: 로그와 산출물 저장 경로

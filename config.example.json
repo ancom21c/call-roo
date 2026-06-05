@@ -419,6 +419,7 @@
     "side_margin_px": 20,
     "section_gap_px": 16,
     "image_max_height_px": 260,
+    "title_icon_file": null,
     "title_font_size": 28,
     "body_font_size": 24,
     "timestamp_font_size": 18,

@@ -44,6 +44,7 @@ class LayoutTest(unittest.TestCase):
                     side_margin_px=20,
                     section_gap_px=16,
                     image_max_height_px=180,
+                    title_icon_file=None,
                     title_font_size=28,
                     body_font_size=24,
                     timestamp_font_size=18,
@@ -71,6 +72,7 @@ class LayoutTest(unittest.TestCase):
                     side_margin_px=20,
                     section_gap_px=16,
                     image_max_height_px=120,
+                    title_icon_file=None,
                     title_font_size=28,
                     body_font_size=24,
                     timestamp_font_size=18,
@@ -97,6 +99,39 @@ class LayoutTest(unittest.TestCase):
             any(bbox[0] <= 21 and bbox[2] >= 362 for bbox in later_bboxes),
             "main text border should span the content width",
         )
+
+    def test_compose_ticket_draws_title_icon_next_to_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset_path = root / "asset.png"
+            icon_path = root / "title-icon.png"
+            Image.new("RGB", (80, 40), color="black").save(asset_path)
+            Image.new("RGBA", (48, 48), color=(0, 0, 0, 255)).save(icon_path)
+
+            image = compose_ticket(
+                asset_path=asset_path,
+                fortune_text="오늘의 한 가지\n물 한 컵 먼저\n바로 시작",
+                printed_at=datetime(2026, 4, 1, 19, 30, 0),
+                config=LayoutConfig(
+                    paper_width_px=384,
+                    side_margin_px=20,
+                    section_gap_px=16,
+                    image_max_height_px=120,
+                    title_icon_file=icon_path,
+                    title_font_size=28,
+                    body_font_size=24,
+                    timestamp_font_size=18,
+                    font_path=None,
+                    threshold=160,
+                    max_fortune_chars=100,
+                ),
+                fortune_tag="번뜩",
+            )
+
+        title_bbox = _bbox_for_rows(image, _row_groups(image)[0])
+
+        self.assertAlmostEqual(_bbox_center_x(title_bbox), image.width / 2, delta=8)
+        self.assertGreater(title_bbox[2] - title_bbox[0], _text_width("오늘의 콜!루", _default_font()))
 
     def test_sanitize_text_preserves_haiku_line_breaks(self) -> None:
         text = "  바람이 분다 \n\n 꽃잎이 눕는다 \n 웃음이 온다  "

@@ -77,7 +77,10 @@ class ConfigTest(unittest.TestCase):
                                 }
                             }
                         ],
-                        "layout": {"font_path": "fonts/MyFont.ttf"},
+                        "layout": {
+                            "font_path": "fonts/MyFont.ttf",
+                            "title_icon_file": "title-icon.png",
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -165,6 +168,10 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(
                 config.layout.font_path,
                 (root / "fonts" / "MyFont.ttf").resolve(),
+            )
+            self.assertEqual(
+                config.layout.title_icon_file,
+                (root / "assets" / "title-icon.png").resolve(),
             )
 
     def test_legacy_clip_settings_still_map_to_launch_sound(self) -> None:

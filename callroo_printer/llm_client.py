@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 
 from callroo_printer.config import LLMModelConfig, LLMProfileConfig
+from callroo_printer.web_search import WebSearchClient
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,10 @@ class LLMCallResult:
 class OpenAICompatClient:
     def __init__(self, config: LLMProfileConfig):
         self.config = config
+        self._web_search: WebSearchClient | None = None
+        web_cfg = config.web_search
+        if web_cfg is not None and web_cfg.enabled and web_cfg.signs:
+            self._web_search = WebSearchClient(web_cfg)
 
     def generate_fortune(
         self,
@@ -37,6 +44,16 @@ class OpenAICompatClient:
         recent_fortunes: tuple[str, ...] = (),
         allowed_tags: tuple[str, ...] = (),
     ) -> LLMCallResult:
+        web_sign: str | None = None
+        web_snippets: tuple[str, ...] = ()
+        if self._web_search is not None:
+            web_cfg = self.config.web_search
+            web_sign = random.choice(web_cfg.signs)
+            date_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+            _query, web_snippets = self._web_search.fetch_snippets(
+                sign=web_sign, date_key=date_key
+            )
+        web_cfg = self.config.web_search if web_sign else None
         user_prompt = _compose_user_prompt(
             self.config.prompt,
             current_time_hint=current_time_hint,
@@ -47,6 +64,11 @@ class OpenAICompatClient:
             current_time_hint_post=self.config.current_time_hint_post,
             cleaned_examples_pre=self.config.cleaned_examples_pre,
             cleaned_examples_post=self.config.cleaned_examples_post,
+            web_sign=web_sign,
+            web_snippets=web_snippets,
+            web_context_pre=(web_cfg.context_pre if web_cfg else ""),
+            web_context_post=(web_cfg.context_post if web_cfg else ""),
+            web_sign_directive=(web_cfg.sign_directive if web_cfg else ""),
         )
         attempts: list[dict[str, str]] = []
         last_result: LLMCallResult | None = None
@@ -304,6 +326,11 @@ def _compose_user_prompt(
     cleaned_examples_post: str = (
         "위 예시와 첫 행 시작어, 핵심 명사, 계절어, 분위기, 결말 어미를 반복하지 마."
     ),
+    web_sign: str | None = None,
+    web_snippets: tuple[str, ...] = (),
+    web_context_pre: str = "",
+    web_context_post: str = "",
+    web_sign_directive: str = "",
 ) -> str:
     del variation_hint
     sections = [base_prompt.strip()]
@@ -316,6 +343,34 @@ def _compose_user_prompt(
                 current_time_hint_post,
             )
         )
+
+    if web_sign:
+        web_lines: list[str] = []
+        directive = (
+            web_sign_directive.replace("{sign}", web_sign).strip()
+            if web_sign_directive
+            else ""
+        )
+        if directive:
+            web_lines.append(directive)
+        if web_snippets:
+            pre = (
+                web_context_pre.replace("{sign}", web_sign).strip()
+                if web_context_pre
+                else ""
+            )
+            body = "\n".join(f"- {snippet}" for snippet in web_snippets)
+            post = (
+                web_context_post.replace("{sign}", web_sign).strip()
+                if web_context_post
+                else ""
+            )
+            data_block = _compose_hint_block(pre, body, post)
+            if data_block:
+                web_lines.append(data_block)
+        web_section = "\n\n".join(web_lines)
+        if web_section:
+            sections.append(web_section)
 
     cleaned_examples = [
         " / ".join(line.strip() for line in fortune.splitlines() if line.strip())

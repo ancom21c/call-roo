@@ -44,6 +44,22 @@ class LLMModelConfig:
 
 
 @dataclass(frozen=True)
+class WebSearchConfig:
+    enabled: bool
+    provider: str
+    endpoint: str
+    api_key_env: str
+    query_template: str
+    signs: tuple[str, ...]
+    count: int
+    cache_ttl_seconds: float
+    timeout_seconds: float
+    context_pre: str
+    context_post: str
+    sign_directive: str
+
+
+@dataclass(frozen=True)
 class LLMProfileConfig:
     name: str
     weight: float
@@ -68,6 +84,7 @@ class LLMProfileConfig:
     max_tokens: int
     timeout_seconds: float
     fallback_text: str
+    web_search: Optional["WebSearchConfig"] = None
 
 
 @dataclass(frozen=True)
@@ -441,6 +458,34 @@ def _load_llm_profiles(
     )
 
 
+def _load_web_search(raw: Any) -> Optional[WebSearchConfig]:
+    if not isinstance(raw, dict):
+        return None
+    return WebSearchConfig(
+        enabled=bool(raw.get("enabled", False)),
+        provider=str(raw.get("provider", "brave")),
+        endpoint=str(
+            raw.get("endpoint", "https://api.search.brave.com/res/v1/web/search")
+        ),
+        api_key_env=str(raw.get("api_key_env", "BRAVE_API_KEY")),
+        query_template=str(raw.get("query_template", "오늘 {sign}자리 운세")),
+        signs=_string_tuple(raw.get("signs", [])),
+        count=int(raw.get("count", 3)),
+        cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 21600.0)),
+        timeout_seconds=float(raw.get("timeout_seconds", 8.0)),
+        context_pre=str(raw.get("context_pre", "오늘 검색된 {sign}자리 실제 운세 자료:")),
+        context_post=str(
+            raw.get(
+                "context_post",
+                "위 자료의 핵심 흐름과 분위기를 반영해 작성하고, 자료에 없는 사실을 지어내지 마.",
+            )
+        ),
+        sign_directive=str(
+            raw.get("sign_directive", "이번 출력은 반드시 {sign}자리로 작성한다.")
+        ),
+    )
+
+
 def _load_llm_profile(
     assets_dir: Path,
     profile_section: dict[str, Any],
@@ -517,6 +562,7 @@ def _load_llm_profile(
                 "잠시 운세를 불러오지 못했어요. 다시 한 번 마음속으로 숨을 고르세요.",
             )
         ),
+        web_search=_load_web_search(profile_section.get("web_search")),
     )
 
 

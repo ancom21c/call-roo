@@ -716,6 +716,35 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             history = DashboardSnapshotBuilder(config).list_manual_history()
             self.assertEqual(history[0]["output_width_px"], config.layout.paper_width_px)
 
+    def test_manual_history_sorts_by_created_time_not_random_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            history_root = config.output.outputs_dir / "manual-history"
+            history_root.mkdir(parents=True)
+
+            for history_id, text, created_at in (
+                ("z-old", "older", "2026-06-12T10:00:00+09:00"),
+                ("a-new", "newer", "2026-06-12T11:00:00+09:00"),
+            ):
+                history_dir = history_root / history_id
+                history_dir.mkdir()
+                Image.new("L", (384, 120), 255).save(history_dir / "composed-ticket.png")
+                (history_dir / "manual-print.json").write_text(
+                    json.dumps(
+                        {
+                            "text": text,
+                            "created_at": created_at,
+                            "queued_at": created_at,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            history = DashboardSnapshotBuilder(config).list_manual_history()
+
+            self.assertEqual([entry["id"] for entry in history], ["a-new", "z-old"])
+
     def test_queue_manual_print_saves_multiple_positioned_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

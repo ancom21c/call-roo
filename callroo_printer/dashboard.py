@@ -4298,11 +4298,8 @@ class DashboardSnapshotBuilder:
         if not history_dir.is_dir():
             return []
 
-        entries: list[dict[str, Any]] = []
-        for entry_dir in sorted(
-            (path for path in history_dir.iterdir() if path.is_dir()),
-            reverse=True,
-        ):
+        entries: list[tuple[datetime, dict[str, Any]]] = []
+        for entry_dir in (path for path in history_dir.iterdir() if path.is_dir()):
             history_id = entry_dir.name
             if _safe_history_id(history_id) is None:
                 continue
@@ -4310,11 +4307,23 @@ class DashboardSnapshotBuilder:
             image_path = entry_dir / "composed-ticket.png"
             output_size = _image_dimensions(image_path)
             created_at = _first_text(metadata.get("queued_at"), metadata.get("created_at"))
+            sort_time = _parse_datetime(created_at, self._local_timezone)
             if not created_at and image_path.is_file():
-                created_at = datetime.fromtimestamp(
+                sort_time = datetime.fromtimestamp(
                     image_path.stat().st_mtime,
                     tz=self._local_timezone,
-                ).isoformat()
+                )
+                created_at = sort_time.isoformat()
+            if sort_time is None:
+                timestamp = (
+                    image_path.stat().st_mtime
+                    if image_path.is_file()
+                    else entry_dir.stat().st_mtime
+                )
+                sort_time = datetime.fromtimestamp(
+                    timestamp,
+                    tz=self._local_timezone,
+                )
             text = _first_text(metadata.get("text")) or ""
             text_items = metadata.get("text_items")
             text_count = (
@@ -4323,44 +4332,52 @@ class DashboardSnapshotBuilder:
                 else (1 if text else 0)
             )
             images = metadata.get("images")
-            image_count = len(images) if isinstance(images, list) else (1 if metadata.get("image_path") else 0)
-            entries.append(
-                {
-                    "id": history_id,
-                    "created_at": created_at or "",
-                    "text": text,
-                    "text_preview": text[:80],
-                    "text_count": text_count,
-                    "image_name": _first_text(metadata.get("image_name")) or "",
-                    "image_count": image_count,
-                    "border_style": _first_text(metadata.get("border_style")) or "thin",
-                    "text_vertical_align": (
-                        _first_text(metadata.get("text_vertical_align"))
-                        or _first_text(metadata.get("vertical_align"))
-                        or "center"
-                    ),
-                    "label_width_px": _optional_number(metadata.get("label_width_px")),
-                    "label_height_px": _optional_number(metadata.get("label_height_px")),
-                    "image_scale_percent": _optional_number(
-                        metadata.get("image_scale_percent")
-                    ),
-                    "image_crop": bool(metadata.get("image_crop", False)),
-                    "image_rotation_degrees": _optional_number(
-                        metadata.get("image_rotation_degrees")
-                    ),
-                    "image_url": f"/manual-history/{quote(history_id, safe='')}/image",
-                    "download_url": (
-                        f"/manual-history/{quote(history_id, safe='')}/image?download=1"
-                    ),
-                    "exists": image_path.is_file(),
-                    "output_width_px": output_size[0] if output_size else None,
-                    "output_height_px": output_size[1] if output_size else None,
-                    "size_bytes": image_path.stat().st_size if image_path.is_file() else None,
-                }
+            image_count = (
+                len(images)
+                if isinstance(images, list)
+                else (1 if metadata.get("image_path") else 0)
             )
-            if len(entries) >= limit:
-                break
-        return entries
+            entries.append(
+                (
+                    sort_time,
+                    {
+                        "id": history_id,
+                        "created_at": created_at or "",
+                        "text": text,
+                        "text_preview": text[:80],
+                        "text_count": text_count,
+                        "image_name": _first_text(metadata.get("image_name")) or "",
+                        "image_count": image_count,
+                        "border_style": _first_text(metadata.get("border_style")) or "thin",
+                        "text_vertical_align": (
+                            _first_text(metadata.get("text_vertical_align"))
+                            or _first_text(metadata.get("vertical_align"))
+                            or "center"
+                        ),
+                        "label_width_px": _optional_number(metadata.get("label_width_px")),
+                        "label_height_px": _optional_number(metadata.get("label_height_px")),
+                        "image_scale_percent": _optional_number(
+                            metadata.get("image_scale_percent")
+                        ),
+                        "image_crop": bool(metadata.get("image_crop", False)),
+                        "image_rotation_degrees": _optional_number(
+                            metadata.get("image_rotation_degrees")
+                        ),
+                        "image_url": f"/manual-history/{quote(history_id, safe='')}/image",
+                        "download_url": (
+                            f"/manual-history/{quote(history_id, safe='')}/image?download=1"
+                        ),
+                        "exists": image_path.is_file(),
+                        "output_width_px": output_size[0] if output_size else None,
+                        "output_height_px": output_size[1] if output_size else None,
+                        "size_bytes": (
+                            image_path.stat().st_size if image_path.is_file() else None
+                        ),
+                    },
+                )
+            )
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return [entry for _, entry in entries[:limit]]
 
     def _serialize_artifacts_cached(self) -> dict[str, list[dict[str, Any]]]:
         if self.snapshot_cache_seconds <= 0:

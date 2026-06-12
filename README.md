@@ -344,10 +344,13 @@ sudo bash deploy/systemd/install.sh
 bash scripts/deploy.sh
 ```
 
+`callroo-dashboard.service`가 설치되어 있으면 `scripts/deploy.sh`가 프린터 서비스 배포 뒤 대시보드 서비스도 함께 재시작합니다. 대시보드가 다른 이름으로 설치되어 있으면 `--dashboard-service-name`을 넘기고, 별도로 관리하려면 `--skip-dashboard-restart`를 사용합니다.
+
 상태와 로그 확인:
 
 ```bash
 sudo systemctl status callroo-printer.service
+sudo systemctl status callroo-dashboard.service
 journalctl -u callroo-printer.service -f
 ```
 
@@ -362,7 +365,7 @@ sudo systemctl enable --now callroo-dashboard.service
 
 설치 뒤에는 `callroo-printer.service`와 `callroo-dashboard.service`를 함께 띄우면 됩니다.
 
-`install.sh`는 submodule 초기화, `TiMini-Print` patch 적용, `/opt/callroo-printer` 동기화, `.venv` 생성, requirements 설치, systemd restart까지 처리합니다. 구현 변경, `assets` 변경, `config.json` 변경 뒤에는 다시 실행하거나 `scripts/deploy.sh`를 사용하세요.
+`install.sh`는 submodule 초기화, `TiMini-Print` patch 적용, `/opt/callroo-printer` 동기화, `.venv` 생성, requirements 설치, systemd restart까지 처리합니다. 구현 변경, `assets` 변경, `config.json` 변경 뒤에는 다시 실행하거나 `scripts/deploy.sh`를 사용하세요. 대시보드가 별도 서비스로 떠 있다면 새 HTML/REST 핸들러를 읽도록 대시보드 서비스도 재시작되어야 합니다.
 
 ## 로그와 산출물
 

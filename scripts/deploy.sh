@@ -7,6 +7,7 @@ INSTALL_SCRIPT="${REPO_ROOT}/deploy/systemd/install.sh"
 LOCAL_CONFIG_PATH="${REPO_ROOT}/config.json"
 
 SERVICE_NAME="callroo-printer"
+DASHBOARD_SERVICE_NAME="callroo-dashboard"
 INSTALL_DIR=""
 SERVICE_USER=""
 SERVICE_GROUP=""
@@ -15,6 +16,7 @@ ENV_FILE=""
 LOG_LEVEL=""
 FORCE_DRY_RUN=""
 SKIP_STATUS=0
+SKIP_DASHBOARD_RESTART=0
 
 usage() {
   cat <<EOF
@@ -25,6 +27,9 @@ Deploy the current worktree and config.json to the installed callroo-printer ser
 Options:
   --service-name NAME   systemd service name to inspect and deploy.
                         Default: ${SERVICE_NAME}
+  --dashboard-service-name NAME
+                        dashboard systemd service to restart when installed.
+                        Default: ${DASHBOARD_SERVICE_NAME}
   --install-dir PATH    override install directory.
   --user USER           override service user.
   --group GROUP         override service group.
@@ -33,6 +38,8 @@ Options:
   --log-level LEVEL     override service log level.
   --dry-run             deploy service in --dry-run mode.
   --no-dry-run          deploy service without --dry-run mode.
+  --skip-dashboard-restart
+                        do not restart the dashboard service after deploy.
   --skip-status         do not print final systemctl status/journal hints.
   --help                show this help.
 EOF
@@ -42,6 +49,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --service-name)
       SERVICE_NAME="$2"
+      shift 2
+      ;;
+    --dashboard-service-name)
+      DASHBOARD_SERVICE_NAME="$2"
       shift 2
       ;;
     --install-dir)
@@ -78,6 +89,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-status)
       SKIP_STATUS=1
+      shift
+      ;;
+    --skip-dashboard-restart)
+      SKIP_DASHBOARD_RESTART=1
       shift
       ;;
     --help|-h)
@@ -240,6 +255,7 @@ echo "  user/group: ${SERVICE_USER}:${SERVICE_GROUP}"
 echo "  env file: ${ENV_FILE}"
 echo "  log level: ${LOG_LEVEL}"
 echo "  dry-run: ${FORCE_DRY_RUN}"
+echo "  dashboard service: ${DASHBOARD_SERVICE_NAME}"
 if [[ -n "${DETECTED_LOAD_STATE}" ]]; then
   echo "  detected service load state: ${DETECTED_LOAD_STATE}"
 fi
@@ -270,10 +286,30 @@ fi
 echo "Running deploy/install script..."
 "${deploy_cmd[@]}"
 
+DASHBOARD_LOAD_STATE=""
+if [[ "${SKIP_DASHBOARD_RESTART}" -eq 0 && -n "${DASHBOARD_SERVICE_NAME}" ]]; then
+  DASHBOARD_LOAD_STATE="$(
+    systemctl show "${DASHBOARD_SERVICE_NAME}" --property=LoadState --value --no-page 2>/dev/null || true
+  )"
+  if [[ "${DASHBOARD_LOAD_STATE}" == "loaded" ]]; then
+    echo
+    echo "Restarting dashboard service: ${DASHBOARD_SERVICE_NAME}"
+    sudo systemctl restart "${DASHBOARD_SERVICE_NAME}"
+  else
+    echo
+    echo "Dashboard service not loaded; skipping restart: ${DASHBOARD_SERVICE_NAME}"
+  fi
+fi
+
 if [[ "${SKIP_STATUS}" -eq 0 ]]; then
   echo
   echo "Current service status:"
   sudo systemctl --no-pager --full status "${SERVICE_NAME}" || true
+  if [[ "${DASHBOARD_LOAD_STATE}" == "loaded" ]]; then
+    echo
+    echo "Current dashboard status:"
+    sudo systemctl --no-pager --full status "${DASHBOARD_SERVICE_NAME}" || true
+  fi
   echo
   echo "Recent journal lines:"
   sudo journalctl -u "${SERVICE_NAME}" -n 20 --no-pager || true

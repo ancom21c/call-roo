@@ -34,12 +34,15 @@ def _parse_configured_adapter_names(value: str) -> tuple[str, ...]:
 
 
 def _list_available_bluetooth_adapters() -> tuple[str, ...]:
-    result = subprocess.run(
-        ["hciconfig", "-a"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["hciconfig", "-a"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return ()
     if result.returncode != 0 and not result.stdout:
         return ()
 

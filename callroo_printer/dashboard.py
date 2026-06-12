@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 import shlex
 import subprocess
 import tempfile
@@ -15,13 +16,19 @@ import time
 import uuid
 from collections import Counter, deque
 from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as EMAIL_POLICY
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from PIL import Image
+
 from callroo_printer.config import AppConfig, load_config
+from callroo_printer.layout import compose_manual_print
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +42,23 @@ SERVICE_NAME = "callroo-printer.service"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 AUDIO_EXTENSIONS = {".wav", ".mp3"}
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
+MANUAL_PRINT_MAX_TEXT_CHARS = 1200
+MANUAL_PRINT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+MANUAL_UPLOADS_DIRNAME = "manual-uploads"
+MANUAL_HISTORY_DIRNAME = "manual-history"
+MANUAL_BORDER_STYLES = {"none", "thin", "thick", "double"}
+MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
+MANUAL_FONT_SIZE_MIN = 16
+MANUAL_FONT_SIZE_MAX = 56
+MANUAL_LABEL_WIDTH_MIN = 80
+MANUAL_LABEL_HEIGHT_MIN = 56
+MANUAL_LABEL_HEIGHT_MAX = 1200
+MANUAL_IMAGE_SCALE_MIN = 25
+MANUAL_IMAGE_SCALE_MAX = 300
+MANUAL_IMAGE_ROTATION_MIN = -180
+MANUAL_IMAGE_ROTATION_MAX = 180
+REST_TEXT_PRINT_ENDPOINTS = {"/api/print/text", "/api/print-text"}
+REST_IMAGE_PRINT_ENDPOINTS = {"/api/print/image", "/api/print-image"}
 
 _DASHBOARD_HTML = """<!doctype html>
 <html lang="ko">
@@ -309,7 +333,7 @@ _DASHBOARD_HTML = """<!doctype html>
 
     .action-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
       padding: 16px;
     }
@@ -596,7 +620,8 @@ _DASHBOARD_HTML = """<!doctype html>
       font: inherit;
     }
 
-    button {
+    button,
+    .button-link {
       border: 0;
       border-radius: 12px;
       padding: 10px 14px;
@@ -608,7 +633,17 @@ _DASHBOARD_HTML = """<!doctype html>
       box-shadow: 0 10px 24px rgba(182, 73, 38, 0.18);
     }
 
-    button.secondary {
+    .button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 39px;
+      text-align: center;
+      text-decoration: none;
+    }
+
+    button.secondary,
+    .button-link.secondary {
       color: var(--text);
       background: rgba(38, 25, 14, 0.08);
       box-shadow: none;
@@ -620,7 +655,14 @@ _DASHBOARD_HTML = """<!doctype html>
       box-shadow: 0 10px 24px rgba(159, 42, 32, 0.16);
     }
 
-    button:hover {
+    button.danger {
+      color: white;
+      background: var(--danger);
+      box-shadow: 0 10px 24px rgba(159, 42, 32, 0.16);
+    }
+
+    button:hover,
+    .button-link:hover {
       transform: translateY(-1px);
     }
 
@@ -945,7 +987,7 @@ _DASHBOARD_HTML = """<!doctype html>
     <section class="hero">
       <article class="panel hero-copy">
         <div class="hero-title-row">
-          <img class="hero-mark" src="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png" alt="" aria-hidden="true">
+          <img class="hero-mark" src="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png" alt="" aria-hidden="true" onerror="this.remove()">
           <h1>CALLROO PRINTER DASHBOARD</h1>
         </div>
         <div class="hero-subtitle">생성 결과, 상태, 로그를 한 화면에서</div>
@@ -990,6 +1032,11 @@ _DASHBOARD_HTML = """<!doctype html>
             <h2 class="control-title">아티팩트</h2>
             <button id="open-upload-dialog" type="button">아티팩트 열기</button>
             <div class="control-meta">그림과 음악 파일을 관리합니다.</div>
+          </article>
+          <article class="control-card">
+            <h2 class="control-title">수동 출력</h2>
+            <a class="button-link secondary" href="/print">프린터 페이지</a>
+            <div class="control-meta">문구나 그림 파일을 바로 합성해 출력합니다.</div>
           </article>
         </section>
 
@@ -1365,6 +1412,7 @@ _DASHBOARD_HTML = """<!doctype html>
           preview.trigger_source ? `<span class="badge">${escapeHtml(preview.trigger_source)}</span>` : "",
           preview.used_fallback ? `<span class="badge">fallback</span>` : "",
           preview.dry_run ? `<span class="badge">dry-run</span>` : "",
+          preview.manual_print ? `<span class="badge">수동 출력</span>` : "",
         ].filter(Boolean).join("");
 
         const footerRight = preview.asset_name ? `asset ${escapeHtml(preview.asset_name)}` : preview.error ? escapeHtml(preview.error) : "";
@@ -1973,9 +2021,1597 @@ _DASHBOARD_HTML = """<!doctype html>
       });
     }
 
+    function removeBrokenHeroMarks() {
+      document.querySelectorAll(".hero-mark").forEach((image) => {
+        const removeIfBroken = () => {
+          if (image.complete && image.naturalWidth === 0) {
+            image.remove();
+          }
+        };
+        image.addEventListener("error", () => image.remove());
+        removeIfBroken();
+        window.setTimeout(removeIfBroken, 100);
+        window.setTimeout(removeIfBroken, 1000);
+      });
+    }
+
+    removeBrokenHeroMarks();
     bindControls();
     refreshLoop();
     state.timer = window.setInterval(refreshLoop, REFRESH_MS);
+  </script>
+</body>
+</html>
+"""
+
+_PRINTER_DASHBOARD_HTML = """<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>callroo manual printer</title>
+  <link rel="icon" type="image/png" href="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png">
+  <link rel="apple-touch-icon" href="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png">
+  <style>
+    :root {
+      --bg: #f4efe8;
+      --bg-strong: #e6ddd0;
+      --panel: rgba(255, 251, 246, 0.88);
+      --panel-strong: rgba(255, 251, 246, 0.97);
+      --stroke: rgba(70, 52, 34, 0.14);
+      --text: #26190e;
+      --muted: #6d5a4c;
+      --accent: #b64926;
+      --accent-soft: rgba(182, 73, 38, 0.12);
+      --danger: #9f2a20;
+      --shadow: 0 18px 40px rgba(65, 45, 28, 0.12);
+      --radius: 22px;
+      --radius-sm: 14px;
+      --font-ui: "SUIT Variable", "Pretendard Variable", "Noto Sans KR", sans-serif;
+      --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: var(--font-ui);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(182, 73, 38, 0.16), transparent 30%),
+        radial-gradient(circle at 92% 10%, rgba(66, 105, 82, 0.16), transparent 28%),
+        linear-gradient(180deg, #f8f3ec 0%, var(--bg) 46%, #efe6db 100%);
+    }
+
+    main {
+      width: min(1280px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 56px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .hero-mark {
+      width: 46px;
+      height: 46px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      object-fit: cover;
+      border: 2px solid rgba(38, 25, 14, 0.12);
+      box-shadow: 0 10px 24px rgba(38, 25, 14, 0.18);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 42px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .button-link,
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font: inherit;
+      color: white;
+      background: var(--accent);
+      cursor: pointer;
+      transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
+      box-shadow: 0 10px 24px rgba(182, 73, 38, 0.18);
+    }
+
+    .button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 39px;
+      text-align: center;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    button.secondary,
+    .button-link.secondary {
+      color: var(--text);
+      background: rgba(38, 25, 14, 0.08);
+      box-shadow: none;
+    }
+
+    button:hover,
+    .button-link:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    textarea:disabled {
+      cursor: not-allowed;
+      opacity: 0.58;
+    }
+
+    .printer-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.85fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .editor {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .form-grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    label.field {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    textarea,
+    input[type="file"],
+    input[type="range"],
+    input[type="number"],
+    select {
+      width: 100%;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    textarea,
+    input[type="number"],
+    select {
+      border: 1px solid var(--stroke);
+      border-radius: 10px;
+      background: white;
+      color: var(--text);
+      padding: 9px 10px;
+    }
+
+    textarea {
+      min-height: 210px;
+      resize: vertical;
+      line-height: 1.55;
+      font-family: var(--font-ui);
+    }
+
+    .toggle-field {
+      display: flex;
+      min-height: 38px;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 10px;
+      border: 1px solid var(--stroke);
+      border-radius: 10px;
+      background: white;
+      color: var(--text);
+    }
+
+    .file-drop {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px dashed rgba(70, 52, 34, 0.24);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.54);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .status {
+      min-height: 1.5em;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .status.error {
+      color: var(--danger);
+    }
+
+    .preview-panel {
+      position: sticky;
+      top: 16px;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .preview-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .preview-title {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .preview-meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .paper-shell {
+      display: grid;
+      justify-items: center;
+      padding: 18px;
+      border-radius: var(--radius-sm);
+      background: rgba(38, 25, 14, 0.06);
+      overflow: auto;
+    }
+
+    .paper-preview {
+      position: relative;
+      width: 344px;
+      height: 220px;
+      min-height: 220px;
+      color: #111;
+      background: #fffdf8;
+      box-shadow: 0 16px 32px rgba(38, 25, 14, 0.18);
+      overflow: hidden;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .paper-preview.border-none {
+      border: 0;
+      border-radius: 0;
+    }
+
+    .paper-preview.border-thin {
+      border: 2px solid #111;
+      border-radius: 12px;
+    }
+
+    .paper-preview.border-thick {
+      border: 4px solid #111;
+      border-radius: 12px;
+    }
+
+    .paper-preview.border-double {
+      border: 6px double #111;
+      border-radius: 12px;
+    }
+
+    .canvas-image-layer {
+      position: absolute;
+      inset: 16px;
+      overflow: hidden;
+      z-index: 1;
+    }
+
+    .canvas-image-item {
+      position: absolute;
+      border: 1px solid transparent;
+      transform-origin: center;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .canvas-image-item.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(182, 73, 38, 0.14);
+      z-index: 3;
+    }
+
+    .canvas-image-item:active {
+      cursor: grabbing;
+    }
+
+    .canvas-image-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      filter: grayscale(1);
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .canvas-image-item.crop img {
+      object-fit: cover;
+    }
+
+    .canvas-image-handle,
+    .label-resize-handle {
+      position: absolute;
+      display: none;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #fffdf8;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 4px 12px rgba(38, 25, 14, 0.22);
+      touch-action: none;
+    }
+
+    .canvas-image-item.selected .canvas-image-handle {
+      display: block;
+    }
+
+    .image-resize-handle {
+      right: -9px;
+      bottom: -9px;
+      cursor: nwse-resize;
+    }
+
+    .image-rotate-handle {
+      right: -9px;
+      top: -9px;
+      cursor: grab;
+    }
+
+    .label-resize-handle {
+      display: block;
+      right: 5px;
+      bottom: 5px;
+      z-index: 5;
+      cursor: nwse-resize;
+    }
+
+    .manual-preview-text {
+      position: absolute;
+      inset: 16px;
+      z-index: 2;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      white-space: pre-line;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+      font-weight: 700;
+      pointer-events: none;
+    }
+
+    .manual-preview-text.visible {
+      display: flex;
+    }
+
+    .manual-preview-text.align-left {
+      justify-content: flex-start;
+      text-align: left;
+    }
+
+    .manual-preview-text.align-center {
+      justify-content: center;
+      text-align: center;
+    }
+
+    .manual-preview-text.align-right {
+      justify-content: flex-end;
+      text-align: right;
+    }
+
+    .image-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 32px;
+      align-items: center;
+    }
+
+    .image-chip {
+      min-width: 0;
+      max-width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: none;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .image-chip.selected {
+      color: var(--accent);
+      border-color: rgba(182, 73, 38, 0.42);
+      background: var(--accent-soft);
+    }
+
+    .image-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .image-tools .status {
+      min-width: min(240px, 100%);
+    }
+
+    .image-geometry-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(70, 52, 34, 0.12);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    .image-tool-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .range-value {
+      width: 44px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+      font-family: var(--font-mono);
+    }
+
+    .history-panel {
+      margin-top: 16px;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .history-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .history-title {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .history-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 12px;
+    }
+
+    .history-card {
+      min-width: 0;
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.64);
+    }
+
+    .history-thumb {
+      width: 100%;
+      aspect-ratio: 1 / 0.76;
+      border-radius: 10px;
+      border: 1px solid var(--stroke);
+      background: #fffdf8;
+      object-fit: contain;
+    }
+
+    .history-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .history-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .history-actions a,
+    .history-actions button {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .topbar,
+      .printer-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .preview-panel {
+        position: static;
+      }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .image-geometry-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 640px) {
+      main {
+        width: min(100% - 20px, 1280px);
+        padding-top: 16px;
+      }
+
+      .actions {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .actions button,
+      .actions .button-link {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="panel topbar">
+      <div>
+        <div class="title-row">
+          <img class="hero-mark" src="/asset/Gemini_Generated_Image_trohomtrohomtroh_top_left.png" alt="" aria-hidden="true" onerror="this.remove()">
+          <h1>MANUAL PRINTER DASHBOARD</h1>
+        </div>
+        <div class="subtitle">문구와 그림 파일을 한 장의 프린터 출력물로 바로 큐에 등록합니다.</div>
+      </div>
+      <a class="button-link secondary" href="/">운영 대시보드</a>
+    </header>
+
+    <section class="printer-layout">
+      <form id="manual-form" class="panel editor">
+        <label class="field">문구
+          <textarea id="manual-text" maxlength="1200" placeholder="출력할 문구를 입력하세요."></textarea>
+        </label>
+        <div class="file-drop">
+          <label class="field">그림 파일
+            <input id="manual-image" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple>
+          </label>
+          <div class="status">PDF, DOCX, TXT 같은 문서 파일은 업로드하지 않습니다.</div>
+          <div id="image-list" class="image-list"></div>
+        </div>
+        <div class="form-grid two">
+          <label class="field">라벨 폭 (dot)
+            <input id="label-width" type="number" min="80" max="344" step="4" value="344">
+          </label>
+          <label class="field">라벨 높이 (dot)
+            <input id="label-height" type="number" min="56" max="1200" step="4" value="220">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label class="field">테두리
+            <select id="border-style">
+              <option value="thin">얇은 테두리</option>
+              <option value="thick">두꺼운 테두리</option>
+              <option value="double">이중 테두리</option>
+              <option value="none">테두리 없음</option>
+            </select>
+          </label>
+          <label class="field">정렬
+            <select id="text-align">
+              <option value="center">가운데</option>
+              <option value="left">왼쪽</option>
+              <option value="right">오른쪽</option>
+            </select>
+          </label>
+          <label class="field">글자 크기
+            <div class="range-row">
+              <input id="font-size" type="range" min="16" max="56" value="28">
+              <span id="font-size-value" class="range-value">28px</span>
+            </div>
+          </label>
+        </div>
+        <div class="form-grid">
+          <label class="field">선택 그림 확대
+            <div class="range-row">
+              <input id="image-scale" type="range" min="25" max="300" value="100">
+              <span id="image-scale-value" class="range-value">100%</span>
+            </div>
+          </label>
+          <label class="field">선택 그림 회전
+            <div class="range-row">
+              <input id="image-rotation" type="range" min="-180" max="180" step="15" value="0">
+              <span id="image-rotation-value" class="range-value">0°</span>
+            </div>
+          </label>
+          <label class="field">크롭
+            <span class="toggle-field">
+              <input id="image-crop" type="checkbox">
+              <span>영역 채우기</span>
+            </span>
+          </label>
+        </div>
+        <div id="image-geometry-controls" class="image-geometry-grid">
+          <label class="field">그림 X (dot)
+            <input id="image-x" type="number" step="1" value="0">
+          </label>
+          <label class="field">그림 Y (dot)
+            <input id="image-y" type="number" step="1" value="0">
+          </label>
+          <label class="field">그림 폭 (dot)
+            <input id="image-width" type="number" min="8" step="1" value="0">
+          </label>
+          <label class="field">그림 높이 (dot)
+            <input id="image-height" type="number" min="8" step="1" value="0">
+          </label>
+        </div>
+        <div class="image-tools">
+          <div id="selected-image-status" class="status">그림을 올리면 캔버스에서 이동·크기조절·회전할 수 있습니다.</div>
+          <div class="image-tool-actions">
+            <button id="fit-selected-image" type="button" class="secondary">라벨에 맞춤</button>
+            <button id="remove-selected-image" type="button" class="secondary">선택 그림 삭제</button>
+          </div>
+        </div>
+        <div class="actions">
+          <div id="manual-status" class="status">문구나 그림 중 하나를 넣으면 출력할 수 있습니다.</div>
+          <div>
+            <button id="clear-manual" type="button" class="secondary">초기화</button>
+            <button id="submit-manual" type="submit">출력 큐 등록</button>
+          </div>
+        </div>
+      </form>
+
+      <aside class="panel preview-panel">
+        <div class="preview-head">
+          <h2 class="preview-title">미리보기</h2>
+          <div id="preview-meta" class="preview-meta">384dot paper</div>
+        </div>
+        <div class="paper-shell">
+          <div id="paper-preview" class="paper-preview border-thin">
+            <div id="canvas-image-layer" class="canvas-image-layer"></div>
+            <div id="manual-preview-text" class="manual-preview-text"></div>
+            <div id="label-resize-handle" class="label-resize-handle" title="라벨 크기 조절" aria-label="라벨 크기 조절"></div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel history-panel">
+      <div class="history-head">
+        <h2 class="history-title">수동 출력 이력</h2>
+        <button id="refresh-history" type="button" class="secondary">새로고침</button>
+      </div>
+      <div id="manual-history-list" class="history-grid"></div>
+      <div id="history-status" class="status">이력을 불러오는 중입니다.</div>
+    </section>
+  </main>
+
+  <script>
+    const allowedImageExtensions = new Set(["png", "jpg", "jpeg", "bmp", "gif", "webp"]);
+    const maxImageBytes = 8 * 1024 * 1024;
+    const paperPadding = 16;
+    const minImageSize = 8;
+    const minVisibleImageDots = 8;
+    const state = {
+      images: [],
+      selectedImageId: "",
+      history: [],
+      drag: null,
+      nextImageIndex: 1,
+    };
+
+    function clampNumber(value, min, max, fallback) {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        return fallback;
+      }
+      return Math.max(min, Math.min(max, Math.round(parsed)));
+    }
+
+    function readManualOptions() {
+      return {
+        labelWidth: clampNumber(document.getElementById("label-width").value, 80, 344, 344),
+        labelHeight: clampNumber(document.getElementById("label-height").value, 56, 1200, 220),
+        borderStyle: document.getElementById("border-style").value,
+        textAlign: document.getElementById("text-align").value,
+        fontSize: clampNumber(document.getElementById("font-size").value, 16, 56, 28),
+        imageScale: clampNumber(document.getElementById("image-scale").value, 25, 300, 100),
+        imageRotation: clampNumber(document.getElementById("image-rotation").value, -180, 180, 0),
+        imageCrop: document.getElementById("image-crop").checked,
+      };
+    }
+
+    function contentBox(options = readManualOptions()) {
+      return {
+        width: Math.max(1, options.labelWidth - (paperPadding * 2)),
+        height: Math.max(1, options.labelHeight - (paperPadding * 2)),
+      };
+    }
+
+    function selectedImage() {
+      return state.images.find((item) => item.id === state.selectedImageId) || null;
+    }
+
+    function selectImage(imageId) {
+      state.selectedImageId = state.images.some((item) => item.id === imageId) ? imageId : "";
+      renderPreview();
+    }
+
+    function validateImageFile(file) {
+      if (!file) {
+        return;
+      }
+      const extension = (file.name.split(".").pop() || "").toLowerCase();
+      if (!allowedImageExtensions.has(extension) || (file.type && !file.type.startsWith("image/"))) {
+        throw new Error("그림 파일만 업로드할 수 있습니다. PDF, DOCX, TXT 문서는 제외됩니다.");
+      }
+      if (file.size > maxImageBytes) {
+        throw new Error("그림 파일은 8MB 이하만 업로드할 수 있습니다.");
+      }
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("파일을 읽지 못했습니다."));
+        reader.onload = () => resolve(String(reader.result || ""));
+      reader.readAsDataURL(file);
+      });
+    }
+
+    function readImageDimensions(dataUrl) {
+      return new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => resolve({
+          width: image.naturalWidth || 120,
+          height: image.naturalHeight || 90,
+        });
+        image.onerror = () => resolve({ width: 120, height: 90 });
+        image.src = dataUrl;
+      });
+    }
+
+    function splitDataUrl(dataUrl) {
+      const commaIndex = dataUrl.indexOf(",");
+      return commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
+    }
+
+    function setStatus(message, isError = false) {
+      const status = document.getElementById("manual-status");
+      status.textContent = message;
+      status.classList.toggle("error", isError);
+    }
+
+    function setImageStatus(message) {
+      document.getElementById("selected-image-status").textContent = message;
+    }
+
+    function imageBounds(item, options = readManualOptions()) {
+      const box = contentBox(options);
+      const width = clampNumber(item.width, minImageSize, Math.max(minImageSize, box.width * 2), Math.min(180, box.width));
+      const height = clampNumber(item.height, minImageSize, Math.max(minImageSize, box.height * 2), Math.min(120, box.height));
+      return {
+        minWidth: minImageSize,
+        maxWidth: Math.max(minImageSize, box.width * 2),
+        minHeight: minImageSize,
+        maxHeight: Math.max(minImageSize, box.height * 2),
+        minX: Math.min(0, -width + minVisibleImageDots),
+        maxX: Math.max(0, box.width - minVisibleImageDots),
+        minY: Math.min(0, -height + minVisibleImageDots),
+        maxY: Math.max(0, box.height - minVisibleImageDots),
+      };
+    }
+
+    function clampImageItem(item, options = readManualOptions()) {
+      const boundsBefore = imageBounds(item, options);
+      const before = {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
+        scale: item.scale,
+        rotation: item.rotation_degrees,
+      };
+      item.width = clampNumber(item.width, boundsBefore.minWidth, boundsBefore.maxWidth, Math.min(180, contentBox(options).width));
+      item.height = clampNumber(item.height, boundsBefore.minHeight, boundsBefore.maxHeight, Math.min(120, contentBox(options).height));
+      const boundsAfter = imageBounds(item, options);
+      item.x = clampNumber(item.x, boundsAfter.minX, boundsAfter.maxX, 0);
+      item.y = clampNumber(item.y, boundsAfter.minY, boundsAfter.maxY, 0);
+      item.rotation_degrees = clampNumber(item.rotation_degrees, -180, 180, 0);
+      item.scale = clampNumber(item.scale, 25, 300, 100);
+      item.baseWidth = clampNumber(item.baseWidth, minImageSize, boundsAfter.maxWidth, item.width);
+      item.baseHeight = clampNumber(item.baseHeight, minImageSize, boundsAfter.maxHeight, item.height);
+      return (
+        before.x !== item.x ||
+        before.y !== item.y ||
+        before.width !== item.width ||
+        before.height !== item.height ||
+        before.scale !== item.scale ||
+        before.rotation !== item.rotation_degrees
+      );
+    }
+
+    function imageGeometryInputs() {
+      return {
+        x: document.getElementById("image-x"),
+        y: document.getElementById("image-y"),
+        width: document.getElementById("image-width"),
+        height: document.getElementById("image-height"),
+      };
+    }
+
+    function syncImageGeometryControls(item, options = readManualOptions()) {
+      const inputs = imageGeometryInputs();
+      const controls = Object.values(inputs);
+      controls.forEach((input) => {
+        input.disabled = !item;
+      });
+      if (!item) {
+        inputs.x.value = 0;
+        inputs.y.value = 0;
+        inputs.width.value = 0;
+        inputs.height.value = 0;
+        return;
+      }
+      const bounds = imageBounds(item, options);
+      inputs.x.min = bounds.minX;
+      inputs.x.max = bounds.maxX;
+      inputs.y.min = bounds.minY;
+      inputs.y.max = bounds.maxY;
+      inputs.width.min = bounds.minWidth;
+      inputs.width.max = bounds.maxWidth;
+      inputs.height.min = bounds.minHeight;
+      inputs.height.max = bounds.maxHeight;
+      inputs.x.value = item.x;
+      inputs.y.value = item.y;
+      inputs.width.value = item.width;
+      inputs.height.value = item.height;
+    }
+
+    async function createImageItem(file) {
+      const previewUrl = URL.createObjectURL(file);
+      const dimensions = await readImageDimensions(previewUrl);
+      const box = contentBox();
+      const maxWidth = Math.max(24, Math.min(box.width, 180));
+      const aspect = dimensions.width > 0 ? dimensions.height / dimensions.width : 0.75;
+      let width = maxWidth;
+      let height = Math.max(24, Math.round(width * aspect));
+      if (height > box.height) {
+        const ratio = box.height / height;
+        width = Math.max(24, Math.round(width * ratio));
+        height = Math.max(24, Math.round(height * ratio));
+      }
+      const stagger = (state.images.length % 5) * 14;
+      const item = {
+        id: `image-${Date.now().toString(36)}-${state.nextImageIndex++}`,
+        filename: file.name,
+        file,
+        previewUrl,
+        x: Math.max(0, Math.min(Math.max(0, box.width - width), 8 + stagger)),
+        y: Math.max(0, Math.min(Math.max(0, box.height - height), 8 + stagger)),
+        width,
+        height,
+        baseWidth: width,
+        baseHeight: height,
+        scale: 100,
+        rotation_degrees: 0,
+        crop: false,
+      };
+      clampImageItem(item);
+      return item;
+    }
+
+    function revokeImagePreviewUrl(item) {
+      if (item?.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+        item.previewUrl = "";
+      }
+    }
+
+    function revokeAllImagePreviewUrls() {
+      state.images.forEach(revokeImagePreviewUrl);
+    }
+
+    function createCanvasImageElement(item) {
+      const element = document.createElement("div");
+      element.className = "canvas-image-item";
+      element.dataset.imageId = item.id;
+      const image = document.createElement("img");
+      image.draggable = false;
+      const resizeHandle = document.createElement("span");
+      resizeHandle.className = "canvas-image-handle image-resize-handle";
+      resizeHandle.dataset.imageHandle = "resize";
+      resizeHandle.title = "그림 크기 조절";
+      const rotateHandle = document.createElement("span");
+      rotateHandle.className = "canvas-image-handle image-rotate-handle";
+      rotateHandle.dataset.imageHandle = "rotate";
+      rotateHandle.title = "그림 회전";
+      element.append(image, resizeHandle, rotateHandle);
+      return element;
+    }
+
+    function renderCanvasImages(imageLayer, options) {
+      const elementsById = new Map(
+        Array.from(imageLayer.querySelectorAll(".canvas-image-item")).map((element) => [
+          element.dataset.imageId,
+          element,
+        ])
+      );
+      const activeIds = new Set();
+      state.images.forEach((item) => {
+        clampImageItem(item, options);
+        activeIds.add(item.id);
+        const element = elementsById.get(item.id) || createCanvasImageElement(item);
+        if (!element.parentElement) {
+          imageLayer.append(element);
+        }
+        element.className = `canvas-image-item ${item.id === state.selectedImageId ? "selected" : ""} ${item.crop ? "crop" : ""}`;
+        element.style.left = `${item.x}px`;
+        element.style.top = `${item.y}px`;
+        element.style.width = `${item.width}px`;
+        element.style.height = `${item.height}px`;
+        element.style.transform = `rotate(${item.rotation_degrees}deg)`;
+        const image = element.querySelector("img");
+        if (image.src !== item.previewUrl) {
+          image.src = item.previewUrl;
+        }
+        image.alt = item.filename;
+      });
+      elementsById.forEach((element, imageId) => {
+        if (!activeIds.has(imageId)) {
+          element.remove();
+        }
+      });
+    }
+
+    function renderImageList() {
+      const list = document.getElementById("image-list");
+      if (!state.images.length) {
+        list.innerHTML = '<span class="status">선택된 그림 없음</span>';
+        return;
+      }
+      list.innerHTML = state.images.map((item, index) => `
+        <button type="button" class="image-chip ${item.id === state.selectedImageId ? "selected" : ""}" data-select-image="${escapeHtml(item.id)}">
+          ${escapeHtml(index + 1)}. ${escapeHtml(item.filename)}
+        </button>
+      `).join("");
+    }
+
+    function renderPreview() {
+      const text = document.getElementById("manual-text").value.trim();
+      const options = readManualOptions();
+      const paper = document.getElementById("paper-preview");
+      const imageLayer = document.getElementById("canvas-image-layer");
+      const previewText = document.getElementById("manual-preview-text");
+      const fontLabel = document.getElementById("font-size-value");
+      const imageScale = document.getElementById("image-scale");
+      const imageScaleLabel = document.getElementById("image-scale-value");
+      const imageRotation = document.getElementById("image-rotation");
+      const imageRotationLabel = document.getElementById("image-rotation-value");
+      const imageCrop = document.getElementById("image-crop");
+      const fitButton = document.getElementById("fit-selected-image");
+      const removeButton = document.getElementById("remove-selected-image");
+      const selected = selectedImage();
+
+      paper.className = `paper-preview border-${options.borderStyle}`;
+      paper.style.width = `${options.labelWidth}px`;
+      paper.style.height = `${options.labelHeight}px`;
+      paper.style.minHeight = `${options.labelHeight}px`;
+      renderCanvasImages(imageLayer, options);
+      previewText.textContent = text;
+      previewText.className = `manual-preview-text ${text ? "visible" : ""} align-${options.textAlign}`;
+      previewText.style.fontSize = `${options.fontSize}px`;
+      fontLabel.textContent = `${options.fontSize}px`;
+
+      imageScale.disabled = !selected;
+      imageRotation.disabled = !selected;
+      imageCrop.disabled = !selected;
+      fitButton.disabled = !selected;
+      removeButton.disabled = !selected;
+      if (selected) {
+        imageScale.value = selected.scale;
+        imageRotation.value = selected.rotation_degrees;
+        imageCrop.checked = selected.crop;
+        imageScaleLabel.textContent = `${selected.scale}%`;
+        imageRotationLabel.textContent = `${selected.rotation_degrees}°`;
+        setImageStatus(`${selected.filename} · ${selected.width}×${selected.height}dot · x${selected.x}, y${selected.y}`);
+      } else {
+        imageScale.value = 100;
+        imageRotation.value = 0;
+        imageCrop.checked = false;
+        imageScaleLabel.textContent = "—";
+        imageRotationLabel.textContent = "—";
+        setImageStatus("그림을 올리면 캔버스에서 이동·크기조절·회전할 수 있습니다.");
+      }
+      syncImageGeometryControls(selected, options);
+
+      document.getElementById("label-width").value = options.labelWidth;
+      document.getElementById("label-height").value = options.labelHeight;
+      renderImageList();
+
+      const pieces = [];
+      pieces.push(`후보 폭 384dot 고정`);
+      pieces.push(`${options.labelWidth}×${options.labelHeight}dot 라벨`);
+      if (text) {
+        pieces.push(`${text.length}자`);
+      }
+      if (state.images.length) {
+        pieces.push(`${state.images.length}개 그림`);
+      }
+      document.getElementById("preview-meta").textContent = pieces.join(" · ");
+    }
+
+    async function handleImageChange() {
+      const input = document.getElementById("manual-image");
+      const files = Array.from(input.files || []);
+      if (!files.length) {
+        return;
+      }
+      try {
+        files.forEach(validateImageFile);
+        for (const file of files) {
+          const item = await createImageItem(file);
+          state.images.push(item);
+          state.selectedImageId = item.id;
+        }
+        setStatus(`${files.length}개 그림 추가됨 · 캔버스에서 위치와 크기를 조절하세요.`);
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      } finally {
+        input.value = "";
+      }
+      renderPreview();
+    }
+
+    function applySelectedImageScale() {
+      const item = selectedImage();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      const nextScale = clampNumber(document.getElementById("image-scale").value, 25, 300, 100);
+      const centerX = item.x + (item.width / 2);
+      const centerY = item.y + (item.height / 2);
+      item.scale = nextScale;
+      item.width = Math.max(8, Math.round(item.baseWidth * (nextScale / 100)));
+      item.height = Math.max(8, Math.round(item.baseHeight * (nextScale / 100)));
+      item.x = Math.round(centerX - (item.width / 2));
+      item.y = Math.round(centerY - (item.height / 2));
+      renderPreview();
+    }
+
+    function applySelectedImageRotation() {
+      const item = selectedImage();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      item.rotation_degrees = clampNumber(document.getElementById("image-rotation").value, -180, 180, 0);
+      renderPreview();
+    }
+
+    function applySelectedImageCrop() {
+      const item = selectedImage();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      item.crop = document.getElementById("image-crop").checked;
+      renderPreview();
+    }
+
+    function applySelectedImageGeometry(event) {
+      const item = selectedImage();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      const inputs = imageGeometryInputs();
+      const previous = {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
+      };
+      item.x = Number(inputs.x.value);
+      item.y = Number(inputs.y.value);
+      item.width = Number(inputs.width.value);
+      item.height = Number(inputs.height.value);
+      if (event?.target === inputs.width || event?.target === inputs.height) {
+        item.baseWidth = item.width;
+        item.baseHeight = item.height;
+        item.scale = 100;
+      }
+      const corrected = clampImageItem(item);
+      if (corrected) {
+        setStatus("그림 위치/크기를 유효한 dot 범위로 자동 보정했습니다.");
+      } else if (
+        previous.x !== item.x ||
+        previous.y !== item.y ||
+        previous.width !== item.width ||
+        previous.height !== item.height
+      ) {
+        setStatus("그림 위치/크기를 적용했습니다.");
+      }
+      renderPreview();
+    }
+
+    function fitSelectedImageToLabel() {
+      const item = selectedImage();
+      if (!item) {
+        return;
+      }
+      const box = contentBox();
+      item.x = 0;
+      item.y = 0;
+      item.width = box.width;
+      item.height = box.height;
+      item.baseWidth = item.width;
+      item.baseHeight = item.height;
+      item.scale = 100;
+      clampImageItem(item);
+      setStatus("선택한 그림을 라벨 안쪽 영역에 맞췄습니다.");
+      renderPreview();
+    }
+
+    function removeSelectedImage() {
+      const item = selectedImage();
+      if (!item) {
+        return;
+      }
+      state.images = state.images.filter((candidate) => candidate.id !== item.id);
+      revokeImagePreviewUrl(item);
+      state.selectedImageId = state.images.length ? state.images[state.images.length - 1].id : "";
+      setStatus("선택한 그림을 제거했습니다.");
+      renderPreview();
+    }
+
+    function pointerAngle(clientX, clientY, centerX, centerY) {
+      return Math.atan2(clientY - centerY, clientX - centerX) * (180 / Math.PI);
+    }
+
+    function beginLabelResize(event) {
+      const options = readManualOptions();
+      state.drag = {
+        mode: "label-resize",
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startWidth: options.labelWidth,
+        startHeight: options.labelHeight,
+      };
+      event.preventDefault();
+    }
+
+    function handleCanvasPointerDown(event) {
+      const imageElement = event.target.closest(".canvas-image-item");
+      if (!imageElement) {
+        if (event.target.id === "paper-preview" || event.target.id === "canvas-image-layer") {
+          state.selectedImageId = "";
+          renderPreview();
+        }
+        return;
+      }
+      const imageId = imageElement.dataset.imageId || "";
+      state.selectedImageId = imageId;
+      const item = selectedImage();
+      if (!item) {
+        return;
+      }
+      const handle = event.target.closest("[data-image-handle]");
+      const mode = handle?.dataset.imageHandle === "resize"
+        ? "image-resize"
+        : handle?.dataset.imageHandle === "rotate"
+          ? "image-rotate"
+          : "image-move";
+      const rect = imageElement.getBoundingClientRect();
+      const centerX = rect.left + (rect.width / 2);
+      const centerY = rect.top + (rect.height / 2);
+      state.drag = {
+        mode,
+        id: imageId,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startX: item.x,
+        startY: item.y,
+        startWidth: item.width,
+        startHeight: item.height,
+        startBaseWidth: item.baseWidth,
+        startBaseHeight: item.baseHeight,
+        startRotation: item.rotation_degrees,
+        startAngle: pointerAngle(event.clientX, event.clientY, centerX, centerY),
+        centerX,
+        centerY,
+      };
+      event.preventDefault();
+      renderPreview();
+    }
+
+    function handlePointerMove(event) {
+      if (!state.drag) {
+        return;
+      }
+      const drag = state.drag;
+      event.preventDefault();
+      const dx = event.clientX - drag.startClientX;
+      const dy = event.clientY - drag.startClientY;
+      if (drag.mode === "label-resize") {
+        document.getElementById("label-width").value = clampNumber(drag.startWidth + dx, 80, 344, drag.startWidth);
+        document.getElementById("label-height").value = clampNumber(drag.startHeight + dy, 56, 1200, drag.startHeight);
+        renderPreview();
+        return;
+      }
+
+      const item = state.images.find((candidate) => candidate.id === drag.id);
+      if (!item) {
+        state.drag = null;
+        return;
+      }
+      if (drag.mode === "image-move") {
+        item.x = Math.round(drag.startX + dx);
+        item.y = Math.round(drag.startY + dy);
+      } else if (drag.mode === "image-resize") {
+        const widthScale = Math.max(0.1, (drag.startWidth + dx) / Math.max(1, drag.startWidth));
+        const heightScale = Math.max(0.1, (drag.startHeight + dy) / Math.max(1, drag.startHeight));
+        const scale = Math.max(widthScale, heightScale);
+        item.width = Math.max(8, Math.round(drag.startWidth * scale));
+        item.height = Math.max(8, Math.round(drag.startHeight * scale));
+        item.baseWidth = item.width;
+        item.baseHeight = item.height;
+        item.scale = 100;
+      } else if (drag.mode === "image-rotate") {
+        const angle = pointerAngle(event.clientX, event.clientY, drag.centerX, drag.centerY);
+        item.rotation_degrees = clampNumber(drag.startRotation + angle - drag.startAngle, -180, 180, drag.startRotation);
+      }
+      renderPreview();
+    }
+
+    function handlePointerUp() {
+      state.drag = null;
+    }
+
+    async function submitManualPrint(event) {
+      event.preventDefault();
+      const text = document.getElementById("manual-text").value.trim();
+      if (!text && !state.images.length) {
+        setStatus("문구나 그림 중 하나를 넣어주세요.", true);
+        return;
+      }
+
+      const button = document.getElementById("submit-manual");
+      button.disabled = true;
+      setStatus("출력 큐에 등록하는 중입니다.");
+      try {
+        const options = readManualOptions();
+        const images = [];
+        for (const item of state.images) {
+          clampImageItem(item, options);
+          const dataUrl = await readFileAsDataUrl(item.file);
+          images.push({
+            id: item.id,
+            filename: item.filename,
+            content_base64: splitDataUrl(dataUrl),
+            x: item.x,
+            y: item.y,
+            width: item.width,
+            height: item.height,
+            rotation_degrees: item.rotation_degrees,
+            crop: item.crop,
+          });
+        }
+        const payload = {
+          text,
+          border_style: options.borderStyle,
+          text_align: options.textAlign,
+          font_size: options.fontSize,
+          label_width_px: options.labelWidth,
+          label_height_px: options.labelHeight,
+          image_scale_percent: options.imageScale,
+          image_crop: options.imageCrop,
+          image_rotation_degrees: options.imageRotation,
+          images,
+        };
+
+        const response = await fetch("/api/manual-print", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) {
+          throw new Error(body.error || `manual print ${response.status}`);
+        }
+        setStatus(`큐 등록 완료 · ${body.request_id}`);
+        await fetchManualHistory();
+      } catch (error) {
+        setStatus(`등록 실패: ${error.message || error}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function clearManualForm() {
+      document.getElementById("manual-form").reset();
+      revokeAllImagePreviewUrls();
+      state.images = [];
+      state.selectedImageId = "";
+      state.drag = null;
+      state.nextImageIndex = 1;
+      setStatus("문구나 그림 중 하나를 넣으면 출력할 수 있습니다.");
+      renderPreview();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function formatDateTime(value) {
+      if (!value) {
+        return "-";
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString("ko-KR", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    function renderManualHistory() {
+      const list = document.getElementById("manual-history-list");
+      const status = document.getElementById("history-status");
+      const history = state.history || [];
+      if (!history.length) {
+        list.innerHTML = "";
+        status.textContent = "아직 수동 출력 이력이 없습니다.";
+        return;
+      }
+      status.textContent = `${history.length}개 이력`;
+      list.innerHTML = history.map((entry) => {
+        const labelSize = entry.label_width_px && entry.label_height_px
+          ? `${entry.label_width_px}×${entry.label_height_px}dot`
+          : "라벨 크기 없음";
+        const outputSize = entry.output_width_px && entry.output_height_px
+          ? `출력 ${entry.output_width_px}×${entry.output_height_px}dot`
+          : "출력 크기 없음";
+        const imageCount = Number(entry.image_count || 0);
+        const text = entry.text_preview || (entry.image_name ? `그림 ${entry.image_name}` : "수동 출력");
+        const detail = imageCount > 0
+          ? `${outputSize} · 라벨 ${labelSize} · 그림 ${imageCount}개`
+          : `${outputSize} · 라벨 ${labelSize}`;
+        const image = entry.exists
+          ? `<img class="history-thumb" src="${escapeHtml(entry.image_url)}" alt="${escapeHtml(text)}">`
+          : `<div class="history-thumb"></div>`;
+        return `
+          <article class="history-card" data-history-id="${escapeHtml(entry.id)}">
+            ${image}
+            <div class="history-meta">${escapeHtml(formatDateTime(entry.created_at))} · ${escapeHtml(detail)}</div>
+            <div class="history-meta">${escapeHtml(text)}</div>
+            <div class="history-actions">
+              <button class="secondary" type="button" data-reprint-history="${escapeHtml(entry.id)}">재출력</button>
+              <a class="button-link secondary" href="${escapeHtml(entry.download_url)}" download>다운로드</a>
+              <button class="danger" type="button" data-delete-history="${escapeHtml(entry.id)}">삭제</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+      list.querySelectorAll("[data-reprint-history]").forEach((button) => {
+        button.addEventListener("click", () => reprintManualHistory(button.dataset.reprintHistory || "", button));
+      });
+      list.querySelectorAll("[data-delete-history]").forEach((button) => {
+        button.addEventListener("click", () => deleteManualHistory(button.dataset.deleteHistory || ""));
+      });
+    }
+
+    async function fetchManualHistory() {
+      const status = document.getElementById("history-status");
+      status.textContent = "이력을 불러오는 중입니다.";
+      status.classList.remove("error");
+      try {
+        const response = await fetch("/api/manual-history", { cache: "no-store" });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) {
+          throw new Error(body.error || `history ${response.status}`);
+        }
+        state.history = body.history || [];
+        renderManualHistory();
+      } catch (error) {
+        state.history = [];
+        renderManualHistory();
+        status.textContent = `이력 로드 실패: ${error.message || error}`;
+        status.classList.add("error");
+      }
+    }
+
+    async function reprintManualHistory(historyId, button = null) {
+      if (!historyId) {
+        return;
+      }
+      const status = document.getElementById("history-status");
+      status.classList.remove("error");
+      status.textContent = "재출력을 큐에 등록하는 중입니다.";
+      if (button) {
+        button.disabled = true;
+      }
+      try {
+        const response = await fetch(`/api/manual-history/${encodeURIComponent(historyId)}/reprint`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}",
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) {
+          throw new Error(body.error || `reprint ${response.status}`);
+        }
+        status.textContent = `재출력 큐 등록 완료 · ${body.request_id}`;
+        await fetchManualHistory();
+      } catch (error) {
+        status.textContent = `재출력 실패: ${error.message || error}`;
+        status.classList.add("error");
+      } finally {
+        if (button) {
+          button.disabled = false;
+        }
+      }
+    }
+
+    async function deleteManualHistory(historyId) {
+      if (!historyId) {
+        return;
+      }
+      const status = document.getElementById("history-status");
+      status.classList.remove("error");
+      status.textContent = "이력을 삭제하는 중입니다.";
+      try {
+        const response = await fetch(`/api/manual-history/${encodeURIComponent(historyId)}`, {
+          method: "DELETE",
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) {
+          throw new Error(body.error || `delete ${response.status}`);
+        }
+        state.history = state.history.filter((entry) => entry.id !== historyId);
+        renderManualHistory();
+      } catch (error) {
+        status.textContent = `삭제 실패: ${error.message || error}`;
+        status.classList.add("error");
+      }
+    }
+
+    function removeBrokenHeroMarks() {
+      document.querySelectorAll(".hero-mark").forEach((image) => {
+        const removeIfBroken = () => {
+          if (image.complete && image.naturalWidth === 0) {
+            image.remove();
+          }
+        };
+        image.addEventListener("error", () => image.remove());
+        removeIfBroken();
+        window.setTimeout(removeIfBroken, 100);
+        window.setTimeout(removeIfBroken, 1000);
+      });
+    }
+
+    document.getElementById("manual-form").addEventListener("submit", submitManualPrint);
+    document.getElementById("clear-manual").addEventListener("click", clearManualForm);
+    document.getElementById("manual-text").addEventListener("input", renderPreview);
+    document.getElementById("label-width").addEventListener("input", renderPreview);
+    document.getElementById("label-height").addEventListener("input", renderPreview);
+    document.getElementById("border-style").addEventListener("change", renderPreview);
+    document.getElementById("text-align").addEventListener("change", renderPreview);
+    document.getElementById("font-size").addEventListener("input", renderPreview);
+    document.getElementById("image-scale").addEventListener("input", applySelectedImageScale);
+    document.getElementById("image-rotation").addEventListener("input", applySelectedImageRotation);
+    document.getElementById("image-crop").addEventListener("change", applySelectedImageCrop);
+    Object.values(imageGeometryInputs()).forEach((input) => {
+      input.addEventListener("change", applySelectedImageGeometry);
+    });
+    document.getElementById("manual-image").addEventListener("change", handleImageChange);
+    document.getElementById("image-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-select-image]");
+      if (button) {
+        selectImage(button.dataset.selectImage || "");
+      }
+    });
+    document.getElementById("fit-selected-image").addEventListener("click", fitSelectedImageToLabel);
+    document.getElementById("remove-selected-image").addEventListener("click", removeSelectedImage);
+    document.getElementById("paper-preview").addEventListener("pointerdown", handleCanvasPointerDown);
+    document.getElementById("label-resize-handle").addEventListener("pointerdown", beginLabelResize);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("beforeunload", revokeAllImagePreviewUrls);
+    document.getElementById("refresh-history").addEventListener("click", fetchManualHistory);
+    removeBrokenHeroMarks();
+    renderPreview();
+    fetchManualHistory();
   </script>
 </body>
 </html>
@@ -2102,6 +3738,74 @@ class DashboardSnapshotBuilder:
         if candidate.suffix.lower() not in IMAGE_EXTENSIONS | AUDIO_EXTENSIONS:
             return None
         return candidate
+
+    def resolve_manual_history_image(self, history_id: str) -> Path | None:
+        safe_id = _safe_history_id(history_id)
+        if safe_id is None:
+            return None
+        history_dir = self.config.output.outputs_dir / MANUAL_HISTORY_DIRNAME
+        image_path = (history_dir / safe_id / "composed-ticket.png").resolve()
+        history_root = history_dir.resolve()
+        if not _is_relative_to(image_path, history_root) or not image_path.is_file():
+            return None
+        return image_path
+
+    def list_manual_history(self, *, limit: int = 60) -> list[dict[str, Any]]:
+        history_dir = self.config.output.outputs_dir / MANUAL_HISTORY_DIRNAME
+        if not history_dir.is_dir():
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for entry_dir in sorted(
+            (path for path in history_dir.iterdir() if path.is_dir()),
+            reverse=True,
+        ):
+            history_id = entry_dir.name
+            if _safe_history_id(history_id) is None:
+                continue
+            metadata = _read_json_file(entry_dir / "manual-print.json")
+            image_path = entry_dir / "composed-ticket.png"
+            output_size = _image_dimensions(image_path)
+            created_at = _first_text(metadata.get("queued_at"), metadata.get("created_at"))
+            if not created_at and image_path.is_file():
+                created_at = datetime.fromtimestamp(
+                    image_path.stat().st_mtime,
+                    tz=self._local_timezone,
+                ).isoformat()
+            text = _first_text(metadata.get("text")) or ""
+            images = metadata.get("images")
+            image_count = len(images) if isinstance(images, list) else (1 if metadata.get("image_path") else 0)
+            entries.append(
+                {
+                    "id": history_id,
+                    "created_at": created_at or "",
+                    "text": text,
+                    "text_preview": text[:80],
+                    "image_name": _first_text(metadata.get("image_name")) or "",
+                    "image_count": image_count,
+                    "border_style": _first_text(metadata.get("border_style")) or "thin",
+                    "label_width_px": _optional_number(metadata.get("label_width_px")),
+                    "label_height_px": _optional_number(metadata.get("label_height_px")),
+                    "image_scale_percent": _optional_number(
+                        metadata.get("image_scale_percent")
+                    ),
+                    "image_crop": bool(metadata.get("image_crop", False)),
+                    "image_rotation_degrees": _optional_number(
+                        metadata.get("image_rotation_degrees")
+                    ),
+                    "image_url": f"/manual-history/{quote(history_id, safe='')}/image",
+                    "download_url": (
+                        f"/manual-history/{quote(history_id, safe='')}/image?download=1"
+                    ),
+                    "exists": image_path.is_file(),
+                    "output_width_px": output_size[0] if output_size else None,
+                    "output_height_px": output_size[1] if output_size else None,
+                    "size_bytes": image_path.stat().st_size if image_path.is_file() else None,
+                }
+            )
+            if len(entries) >= limit:
+                break
+        return entries
 
     def _serialize_artifacts(self) -> dict[str, list[dict[str, Any]]]:
         image_paths: dict[str, Path] = {}
@@ -2263,6 +3967,7 @@ class DashboardSnapshotBuilder:
             "trigger_source": _first_text(input_payload.get("trigger_source")) or "",
             "asset_name": Path(asset_path).name if asset_path else "",
             "used_fallback": bool(result_payload.get("used_fallback", False)),
+            "manual_print": bool(result_payload.get("manual_print", False)),
             "dry_run": bool(result_payload.get("dry_run", False)),
             "error": error_message or "",
             "image_url": f"/preview/{quote(job_dir.name, safe='')}" if image_path else "",
@@ -2598,6 +4303,9 @@ def serve_dashboard(
         def do_POST(self) -> None:  # noqa: N802
             self._handle_post()
 
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._handle_delete()
+
         def log_message(self, format: str, *args: Any) -> None:
             LOGGER.debug("%s - %s", self.address_string(), format % args)
 
@@ -2606,12 +4314,38 @@ def serve_dashboard(
             if parsed.path == "/":
                 self._send_html(_DASHBOARD_HTML, send_body=send_body)
                 return
+            if parsed.path in {"/print", "/printer"}:
+                self._send_html(_PRINTER_DASHBOARD_HTML, send_body=send_body)
+                return
             if parsed.path == "/api/dashboard":
                 query = parse_qs(parsed.query)
                 selected_date = query.get("date", [""])[0]
                 self._send_json(
                     builder.build_snapshot(selected_date=selected_date),
                     send_body=send_body,
+                )
+                return
+            if parsed.path == "/api/manual-history":
+                self._send_json(
+                    {"ok": True, "history": builder.list_manual_history()},
+                    send_body=send_body,
+                )
+                return
+            if parsed.path.startswith("/manual-history/") and parsed.path.endswith("/image"):
+                history_id = parsed.path.removeprefix("/manual-history/").removesuffix("/image")
+                image_path = builder.resolve_manual_history_image(history_id)
+                if image_path is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "manual history image not found")
+                    return
+                query = parse_qs(parsed.query)
+                self._send_file(
+                    image_path,
+                    send_body=send_body,
+                    download_name=(
+                        f"callroo-manual-{_safe_history_id(history_id)}.png"
+                        if query.get("download", [""])[0]
+                        else None
+                    ),
                 )
                 return
             if parsed.path.startswith("/preview/"):
@@ -2639,9 +4373,35 @@ def serve_dashboard(
         def _handle_post(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if parsed.path in REST_TEXT_PRINT_ENDPOINTS:
+                    payload = self._read_rest_body()
+                    result = _queue_rest_text_print(builder.config, payload)
+                    builder.clear_cache()
+                    self._send_json(result, send_body=True)
+                    return
+                if parsed.path in REST_IMAGE_PRINT_ENDPOINTS:
+                    payload = self._read_rest_body()
+                    result = _queue_rest_image_print(builder.config, payload)
+                    builder.clear_cache()
+                    self._send_json(result, send_body=True)
+                    return
+
                 payload = self._read_json_body()
                 if parsed.path == "/api/print":
                     result = _queue_dashboard_print(builder.config, payload)
+                    builder.clear_cache()
+                    self._send_json(result, send_body=True)
+                    return
+                if parsed.path == "/api/manual-print":
+                    result = _queue_manual_print(builder.config, payload)
+                    builder.clear_cache()
+                    self._send_json(result, send_body=True)
+                    return
+                if parsed.path.startswith("/api/manual-history/") and parsed.path.endswith("/reprint"):
+                    history_id = (
+                        parsed.path.removeprefix("/api/manual-history/").removesuffix("/reprint")
+                    )
+                    result = _queue_manual_history_reprint(builder.config, history_id)
                     builder.clear_cache()
                     self._send_json(result, send_body=True)
                     return
@@ -2727,6 +4487,30 @@ def serve_dashboard(
                     status=HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
 
+        def _handle_delete(self) -> None:
+            parsed = urlparse(self.path)
+            try:
+                if parsed.path.startswith("/api/manual-history/"):
+                    history_id = parsed.path.removeprefix("/api/manual-history/")
+                    result = _delete_manual_history(builder.config, history_id)
+                    builder.clear_cache()
+                    self._send_json(result, send_body=True)
+                    return
+                self.send_error(HTTPStatus.NOT_FOUND, "not found")
+            except ValueError as exc:
+                self._send_json(
+                    {"ok": False, "error": str(exc)},
+                    send_body=True,
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception as exc:
+                LOGGER.exception("Dashboard DELETE failed")
+                self._send_json(
+                    {"ok": False, "error": str(exc)},
+                    send_body=True,
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+
         def _send_html(self, payload: str, *, send_body: bool) -> None:
             encoded = payload.encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -2738,15 +4522,9 @@ def serve_dashboard(
                 self.wfile.write(encoded)
 
         def _read_json_body(self) -> dict[str, Any]:
-            try:
-                content_length = int(self.headers.get("Content-Length", "0"))
-            except ValueError as exc:
-                raise ValueError("invalid Content-Length") from exc
-            if content_length <= 0:
+            raw_body = self._read_body_bytes(max_bytes=MAX_UPLOAD_BYTES * 2)
+            if not raw_body:
                 return {}
-            if content_length > MAX_UPLOAD_BYTES * 2:
-                raise ValueError("request body too large")
-            raw_body = self.rfile.read(content_length)
             try:
                 payload = json.loads(raw_body.decode("utf-8"))
             except json.JSONDecodeError as exc:
@@ -2754,6 +4532,32 @@ def serve_dashboard(
             if not isinstance(payload, dict):
                 raise ValueError("JSON body must be an object")
             return payload
+
+        def _read_rest_body(self) -> dict[str, Any]:
+            content_type = self.headers.get("Content-Type", "")
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type == "multipart/form-data":
+                raw_body = self._read_body_bytes(max_bytes=MAX_UPLOAD_BYTES * 2)
+                return _parse_multipart_form(content_type, raw_body)
+            if media_type == "application/x-www-form-urlencoded":
+                raw_body = self._read_body_bytes(max_bytes=MAX_UPLOAD_BYTES * 2)
+                fields = parse_qs(
+                    raw_body.decode("utf-8"),
+                    keep_blank_values=True,
+                )
+                return {key: values[-1] if values else "" for key, values in fields.items()}
+            return self._read_json_body()
+
+        def _read_body_bytes(self, *, max_bytes: int) -> bytes:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid Content-Length") from exc
+            if content_length <= 0:
+                return b""
+            if content_length > max_bytes:
+                raise ValueError("request body too large")
+            return self.rfile.read(content_length)
 
         def _send_json(
             self,
@@ -2771,7 +4575,13 @@ def serve_dashboard(
             if send_body:
                 self.wfile.write(encoded)
 
-        def _send_file(self, path: Path, *, send_body: bool) -> None:
+        def _send_file(
+            self,
+            path: Path,
+            *,
+            send_body: bool,
+            download_name: str | None = None,
+        ) -> None:
             payload = path.read_bytes()
             mime_type, _ = mimetypes.guess_type(path.name)
             self.send_response(HTTPStatus.OK)
@@ -2780,6 +4590,11 @@ def serve_dashboard(
                 mime_type or "application/octet-stream",
             )
             self.send_header("Cache-Control", "public, max-age=60")
+            if download_name:
+                self.send_header(
+                    "Content-Disposition",
+                    f"attachment; filename={download_name}",
+                )
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             if send_body:
@@ -2856,6 +4671,500 @@ def _queue_dashboard_print(config: AppConfig, payload: dict[str, Any]) -> dict[s
         "queued_at": requested_at,
         "trigger_path": str(trigger_path),
     }
+
+
+def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    request_id = uuid.uuid4().hex[:12]
+    requested_at = datetime.now().astimezone().isoformat()
+    text = _manual_print_text(payload.get("text"))
+    border_style = _manual_choice(
+        payload.get("border_style"),
+        allowed=MANUAL_BORDER_STYLES,
+        default="thin",
+    )
+    text_align = _manual_choice(
+        payload.get("text_align"),
+        allowed=MANUAL_TEXT_ALIGNS,
+        default="center",
+    )
+    font_size = _manual_font_size(payload.get("font_size"), config.layout.body_font_size)
+    label_width_px = _manual_label_width(payload.get("label_width_px"), config)
+    label_height_px = _manual_label_height(payload.get("label_height_px"))
+    image_scale_percent = _manual_number_range(
+        payload.get("image_scale_percent"),
+        default=100,
+        minimum=MANUAL_IMAGE_SCALE_MIN,
+        maximum=MANUAL_IMAGE_SCALE_MAX,
+    )
+    image_crop = bool(payload.get("image_crop", False))
+    image_rotation_degrees = _manual_number_range(
+        payload.get("image_rotation_degrees"),
+        default=0,
+        minimum=MANUAL_IMAGE_ROTATION_MIN,
+        maximum=MANUAL_IMAGE_ROTATION_MAX,
+    )
+    image_items = _save_manual_image_items(
+        config.output.outputs_dir,
+        request_id=request_id,
+        payload=payload,
+        label_width_px=label_width_px,
+        label_height_px=label_height_px,
+    )
+    image_path = Path(str(image_items[0]["path"])) if image_items else None
+    image_name = ", ".join(str(item.get("filename", "")) for item in image_items if item.get("filename"))
+
+    if not text and not image_items:
+        raise ValueError("manual print requires text or image")
+
+    history_metadata = {
+        "request_id": request_id,
+        "created_at": requested_at,
+        "queued_at": requested_at,
+        "text": text,
+        "border_style": border_style,
+        "text_align": text_align,
+        "font_size": font_size,
+        "label_width_px": label_width_px,
+        "label_height_px": label_height_px,
+        "image_scale_percent": image_scale_percent,
+        "image_crop": image_crop,
+        "image_rotation_degrees": image_rotation_degrees,
+        "image_path": str(image_path or ""),
+        "image_name": image_name,
+        "images": _serializable_image_items(image_items),
+    }
+    try:
+        _save_manual_history(config, request_id, history_metadata, image_path=image_path)
+    except Exception:
+        _cleanup_manual_upload_items(image_items)
+        raise
+
+    trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+    trigger_path.parent.mkdir(parents=True, exist_ok=True)
+    trigger_payload = {
+        "request_id": request_id,
+        "requested_at": requested_at,
+        "raw_input": text or "\n",
+        "note": "manual-print",
+        "manual_print": {
+            "text": text,
+            "border_style": border_style,
+            "text_align": text_align,
+            "font_size": font_size,
+            "label_width_px": label_width_px,
+            "label_height_px": label_height_px,
+            "image_scale_percent": image_scale_percent,
+            "image_crop": image_crop,
+            "image_rotation_degrees": image_rotation_degrees,
+            "image_path": str(image_path or ""),
+            "image_name": image_name,
+            "images": _serializable_image_items(image_items),
+        },
+    }
+    try:
+        _append_jsonl_record(trigger_path, trigger_payload)
+    except Exception:
+        _cleanup_manual_upload_items(image_items)
+        _delete_manual_history(config, request_id, missing_ok=True)
+        raise
+
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "queued_at": requested_at,
+        "trigger_path": str(trigger_path),
+        "has_image": bool(image_items),
+        "image_count": len(image_items),
+        "text_chars": len(text),
+        "border_style": border_style,
+        "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
+        "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
+    }
+
+
+def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[str, Any]:
+    safe_id = _safe_history_id(history_id)
+    if safe_id is None:
+        raise ValueError("invalid manual history id")
+    history_dir = config.output.outputs_dir / MANUAL_HISTORY_DIRNAME / safe_id
+    metadata = _read_json_file(history_dir / "manual-print.json")
+    if not metadata:
+        raise ValueError("manual history entry not found")
+
+    request_id = uuid.uuid4().hex[:12]
+    requested_at = datetime.now().astimezone().isoformat()
+    text = _manual_print_text(metadata.get("text"))
+    border_style = _manual_choice(
+        metadata.get("border_style"),
+        allowed=MANUAL_BORDER_STYLES,
+        default="thin",
+    )
+    text_align = _manual_choice(
+        metadata.get("text_align"),
+        allowed=MANUAL_TEXT_ALIGNS,
+        default="center",
+    )
+    font_size = _manual_font_size(metadata.get("font_size"), config.layout.body_font_size)
+    label_width_px = _manual_label_width(metadata.get("label_width_px"), config)
+    label_height_px = _manual_label_height(metadata.get("label_height_px"))
+    image_scale_percent = _manual_number_range(
+        metadata.get("image_scale_percent"),
+        default=100,
+        minimum=MANUAL_IMAGE_SCALE_MIN,
+        maximum=MANUAL_IMAGE_SCALE_MAX,
+    )
+    image_crop = bool(metadata.get("image_crop", False))
+    image_rotation_degrees = _manual_number_range(
+        metadata.get("image_rotation_degrees"),
+        default=0,
+        minimum=MANUAL_IMAGE_ROTATION_MIN,
+        maximum=MANUAL_IMAGE_ROTATION_MAX,
+    )
+    image_items, legacy_image_path = _copy_manual_history_images(
+        config.output.outputs_dir,
+        request_id=request_id,
+        metadata=metadata,
+    )
+    image_path = Path(str(image_items[0]["path"])) if image_items else legacy_image_path
+    image_name = (
+        ", ".join(
+            str(item.get("filename", ""))
+            for item in image_items
+            if item.get("filename")
+        )
+        or _first_text(metadata.get("image_name"))
+        or ""
+    )
+
+    if not text and not image_path and not image_items:
+        raise ValueError("manual history entry has no printable content")
+
+    history_metadata = {
+        "request_id": request_id,
+        "created_at": requested_at,
+        "queued_at": requested_at,
+        "reprinted_from": safe_id,
+        "text": text,
+        "border_style": border_style,
+        "text_align": text_align,
+        "font_size": font_size,
+        "label_width_px": label_width_px,
+        "label_height_px": label_height_px,
+        "image_scale_percent": image_scale_percent,
+        "image_crop": image_crop,
+        "image_rotation_degrees": image_rotation_degrees,
+        "image_path": str(image_path or ""),
+        "image_name": image_name,
+        "images": _serializable_image_items(image_items),
+    }
+    try:
+        _save_manual_history(config, request_id, history_metadata, image_path=image_path)
+    except Exception:
+        _cleanup_manual_upload_items(image_items)
+        if legacy_image_path is not None:
+            _unlink_if_exists(legacy_image_path)
+        raise
+
+    trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+    trigger_path.parent.mkdir(parents=True, exist_ok=True)
+    trigger_payload = {
+        "request_id": request_id,
+        "requested_at": requested_at,
+        "raw_input": text or "\n",
+        "note": "manual-reprint",
+        "manual_print": {
+            "text": text,
+            "border_style": border_style,
+            "text_align": text_align,
+            "font_size": font_size,
+            "label_width_px": label_width_px,
+            "label_height_px": label_height_px,
+            "image_scale_percent": image_scale_percent,
+            "image_crop": image_crop,
+            "image_rotation_degrees": image_rotation_degrees,
+            "image_path": str(image_path or ""),
+            "image_name": image_name,
+            "images": _serializable_image_items(image_items),
+        },
+    }
+    try:
+        _append_jsonl_record(trigger_path, trigger_payload)
+    except Exception:
+        _cleanup_manual_upload_items(image_items)
+        if legacy_image_path is not None:
+            _unlink_if_exists(legacy_image_path)
+        _delete_manual_history(config, request_id, missing_ok=True)
+        raise
+
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "queued_at": requested_at,
+        "trigger_path": str(trigger_path),
+        "reprinted_from": safe_id,
+        "has_image": bool(image_path or image_items),
+        "image_count": len(image_items) if image_items else (1 if image_path else 0),
+        "text_chars": len(text),
+        "border_style": border_style,
+        "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
+        "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
+    }
+
+
+def _queue_rest_text_print(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    manual_payload = _rest_manual_options(payload)
+    manual_payload["text"] = _required_text(payload.get("text"), "text")
+    return _queue_manual_print(config, manual_payload)
+
+
+def _queue_rest_image_print(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    manual_payload = _rest_manual_options(payload)
+    label_width_px = _manual_label_width(manual_payload.get("label_width_px"), config)
+    label_height_px = _manual_label_height(manual_payload.get("label_height_px"))
+    manual_payload["label_width_px"] = label_width_px
+    manual_payload["label_height_px"] = label_height_px
+    image_item = _rest_image_source(payload)
+    image_item.update(_rest_image_item_options(payload, label_width_px, label_height_px))
+    manual_payload["text"] = _optional_text(payload.get("text")) or ""
+    manual_payload["images"] = [image_item]
+    return _queue_manual_print(config, manual_payload)
+
+
+def _rest_manual_options(payload: dict[str, Any]) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    _copy_first_present(options, payload, "label_width_px", "label_width_px", "label_width")
+    _copy_first_present(options, payload, "label_height_px", "label_height_px", "label_height")
+    _copy_first_present(options, payload, "border_style", "border_style", "border")
+    _copy_first_present(options, payload, "text_align", "text_align", "align")
+    _copy_first_present(options, payload, "font_size", "font_size")
+    return options
+
+
+def _rest_image_item_options(
+    payload: dict[str, Any],
+    label_width_px: int,
+    label_height_px: int,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "x": 0,
+        "y": 0,
+        "width": label_width_px,
+        "height": label_height_px,
+    }
+    _copy_first_present(item, payload, "x", "x", "image_x")
+    _copy_first_present(item, payload, "y", "y", "image_y")
+    _copy_first_present(item, payload, "width", "image_width_px", "image_width", "width")
+    _copy_first_present(item, payload, "height", "image_height_px", "image_height", "height")
+    _copy_first_present(
+        item,
+        payload,
+        "rotation_degrees",
+        "rotation_degrees",
+        "image_rotation_degrees",
+        "rotation",
+    )
+    crop_value = _first_present(payload, "crop", "image_crop")
+    if crop_value is not None:
+        item["crop"] = _coerce_bool(crop_value)
+    return item
+
+
+def _rest_image_source(payload: dict[str, Any]) -> dict[str, Any]:
+    image = payload.get("image")
+    if image is None:
+        image = payload.get("file")
+    if isinstance(image, dict):
+        filename = _required_text(image.get("filename"), "image.filename")
+        content_base64 = _required_text(image.get("content_base64"), "image.content_base64")
+        return {"filename": filename, "content_base64": content_base64}
+
+    filename = _required_text(payload.get("filename"), "filename")
+    content_base64 = _required_text(payload.get("content_base64"), "content_base64")
+    return {"filename": filename, "content_base64": content_base64}
+
+
+def _parse_multipart_form(content_type: str, raw_body: bytes) -> dict[str, Any]:
+    if not raw_body:
+        return {}
+    message = BytesParser(policy=EMAIL_POLICY).parsebytes(
+        (
+            f"Content-Type: {content_type}\r\n"
+            "MIME-Version: 1.0\r\n"
+            "\r\n"
+        ).encode("utf-8")
+        + raw_body
+    )
+    if not message.is_multipart():
+        raise ValueError("multipart request is invalid")
+
+    payload: dict[str, Any] = {}
+    first_file: dict[str, Any] | None = None
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        filename = part.get_filename()
+        raw_part = part.get_payload(decode=True) or b""
+        if filename:
+            file_payload = {
+                "filename": Path(filename).name,
+                "content_base64": base64.b64encode(raw_part).decode("ascii"),
+            }
+            if first_file is None:
+                first_file = file_payload
+            payload[str(name)] = file_payload
+            continue
+        payload[str(name)] = raw_part.decode("utf-8", errors="replace")
+
+    if first_file is not None and not isinstance(payload.get("image"), dict):
+        payload["image"] = first_file
+    return payload
+
+
+def _copy_first_present(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    target_key: str,
+    *source_keys: str,
+) -> None:
+    value = _first_present(source, *source_keys)
+    if value is not None:
+        target[target_key] = value
+
+
+def _first_present(source: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in source and source[key] is not None and source[key] != "":
+            return source[key]
+    return None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def _copy_manual_history_images(
+    outputs_dir: Path,
+    *,
+    request_id: str,
+    metadata: dict[str, Any],
+) -> tuple[list[dict[str, Any]], Path | None]:
+    copied_paths: list[Path] = []
+    try:
+        raw_items = metadata.get("images")
+        copied_items: list[dict[str, Any]] = []
+        if isinstance(raw_items, list) and raw_items:
+            for index, item in enumerate(raw_items):
+                if not isinstance(item, dict):
+                    continue
+                source_path = _resolve_manual_upload_path(item.get("path"), outputs_dir)
+                filename = _first_text(item.get("filename")) or source_path.name
+                target_path = _copy_manual_upload_for_request(
+                    outputs_dir,
+                    request_id=request_id,
+                    source_path=source_path,
+                    filename=filename,
+                    index=index,
+                )
+                copied_paths.append(target_path)
+                copied_items.append(
+                    {
+                        "id": _optional_text(item.get("id")) or f"image-{index + 1}",
+                        "filename": filename,
+                        "path": str(target_path),
+                        "x": _manual_number_range(
+                            item.get("x"),
+                            default=0,
+                            minimum=-MANUAL_LABEL_HEIGHT_MAX,
+                            maximum=MANUAL_LABEL_HEIGHT_MAX,
+                        ),
+                        "y": _manual_number_range(
+                            item.get("y"),
+                            default=0,
+                            minimum=-MANUAL_LABEL_HEIGHT_MAX,
+                            maximum=MANUAL_LABEL_HEIGHT_MAX,
+                        ),
+                        "width": _manual_number_range(
+                            item.get("width"),
+                            default=1,
+                            minimum=1,
+                            maximum=MANUAL_LABEL_HEIGHT_MAX,
+                        ),
+                        "height": _manual_number_range(
+                            item.get("height"),
+                            default=1,
+                            minimum=1,
+                            maximum=MANUAL_LABEL_HEIGHT_MAX,
+                        ),
+                        "rotation_degrees": _manual_number_range(
+                            item.get("rotation_degrees"),
+                            default=0,
+                            minimum=MANUAL_IMAGE_ROTATION_MIN,
+                            maximum=MANUAL_IMAGE_ROTATION_MAX,
+                        ),
+                        "crop": bool(item.get("crop", False)),
+                    }
+                )
+            return copied_items, None
+
+        legacy_path = _first_text(metadata.get("image_path"))
+        if legacy_path is None:
+            return [], None
+        source_path = _resolve_manual_upload_path(legacy_path, outputs_dir)
+        filename = _first_text(metadata.get("image_name")) or source_path.name
+        target_path = _copy_manual_upload_for_request(
+            outputs_dir,
+            request_id=request_id,
+            source_path=source_path,
+            filename=filename,
+            index=0,
+        )
+        copied_paths.append(target_path)
+        return [], target_path
+    except Exception:
+        for path in copied_paths:
+            _unlink_if_exists(path)
+        raise
+
+
+def _resolve_manual_upload_path(value: Any, outputs_dir: Path) -> Path:
+    raw_path = _required_text(value, "manual image path")
+    candidate = Path(raw_path).expanduser().resolve()
+    uploads_dir = (outputs_dir / MANUAL_UPLOADS_DIRNAME).resolve()
+    if not _is_relative_to(candidate, uploads_dir):
+        raise ValueError("manual history image must be inside manual uploads directory")
+    if not candidate.is_file():
+        raise ValueError("manual history image file not found")
+    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("manual history image file is not supported")
+    return candidate
+
+
+def _copy_manual_upload_for_request(
+    outputs_dir: Path,
+    *,
+    request_id: str,
+    source_path: Path,
+    filename: str,
+    index: int,
+) -> Path:
+    target_path = _manual_upload_path(
+        outputs_dir,
+        request_id=request_id,
+        filename=f"{index + 1:02d}-{Path(filename).name}",
+    )
+    _atomic_write_bytes(target_path, source_path.read_bytes())
+    return target_path
 
 
 def _append_jsonl_record(path: Path, payload: dict[str, Any]) -> None:
@@ -3169,6 +5478,16 @@ def _unlink_if_exists(path: Path | None) -> None:
         pass
 
 
+def _image_dimensions(path: Path) -> tuple[int, int] | None:
+    if not path.is_file():
+        return None
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except Exception:
+        return None
+
+
 def _find_profile_payload(
     profiles: list[Any],
     profile_name: str,
@@ -3241,6 +5560,290 @@ def _asset_upload_path(assets_dir: Path, filename: str, kind: str) -> Path:
     if not _is_relative_to(target_path, assets_dir.resolve()):
         raise ValueError("asset path escapes assets directory")
     return target_path
+
+
+def _save_manual_upload(
+    outputs_dir: Path,
+    *,
+    request_id: str,
+    filename: str,
+    content_base64: str,
+) -> Path:
+    target_path = _manual_upload_path(outputs_dir, request_id=request_id, filename=filename)
+    try:
+        content = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("image.content_base64 is not valid base64") from exc
+    if not content:
+        raise ValueError("manual image file is empty")
+    if len(content) > MANUAL_PRINT_IMAGE_MAX_BYTES:
+        raise ValueError("manual image file is too large")
+    _validate_image_content(content)
+    _atomic_write_bytes(target_path, content)
+    return target_path
+
+
+def _save_manual_image_items(
+    outputs_dir: Path,
+    *,
+    request_id: str,
+    payload: dict[str, Any],
+    label_width_px: int,
+    label_height_px: int,
+) -> list[dict[str, Any]]:
+    raw_items = payload.get("images")
+    if raw_items is None:
+        legacy = payload.get("image")
+        raw_items = [legacy] if legacy is not None else []
+    if not isinstance(raw_items, list):
+        raise ValueError("images must be a list")
+
+    image_items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            raise ValueError("image entries must be objects")
+        filename = _required_text(item.get("filename"), f"images[{index}].filename")
+        content_base64 = _required_text(
+            item.get("content_base64"),
+            f"images[{index}].content_base64",
+        )
+        clean_name = f"{index + 1:02d}-{Path(filename).name}"
+        target_path = _save_manual_upload(
+            outputs_dir,
+            request_id=request_id,
+            filename=clean_name,
+            content_base64=content_base64,
+        )
+        item_width = _manual_number_range(
+            item.get("width"),
+            default=min(label_width_px, 180),
+            minimum=8,
+            maximum=max(8, label_width_px * 2),
+        )
+        item_height = _manual_number_range(
+            item.get("height"),
+            default=min(label_height_px, 120),
+            minimum=8,
+            maximum=max(8, label_height_px * 2),
+        )
+        image_items.append(
+            {
+                "id": _optional_text(item.get("id")) or f"image-{index + 1}",
+                "filename": filename,
+                "path": str(target_path),
+                "x": _manual_number_range(
+                    item.get("x"),
+                    default=0,
+                    minimum=-label_width_px,
+                    maximum=label_width_px,
+                ),
+                "y": _manual_number_range(
+                    item.get("y"),
+                    default=0,
+                    minimum=-label_height_px,
+                    maximum=label_height_px,
+                ),
+                "width": item_width,
+                "height": item_height,
+                "rotation_degrees": _manual_number_range(
+                    item.get("rotation_degrees"),
+                    default=0,
+                    minimum=MANUAL_IMAGE_ROTATION_MIN,
+                    maximum=MANUAL_IMAGE_ROTATION_MAX,
+                ),
+                "crop": bool(item.get("crop", False)),
+            }
+        )
+    return image_items
+
+
+def _serializable_image_items(image_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(item.get("id", "")),
+            "filename": str(item.get("filename", "")),
+            "path": str(item.get("path", "")),
+            "x": int(item.get("x", 0)),
+            "y": int(item.get("y", 0)),
+            "width": int(item.get("width", 1)),
+            "height": int(item.get("height", 1)),
+            "rotation_degrees": int(item.get("rotation_degrees", 0)),
+            "crop": bool(item.get("crop", False)),
+        }
+        for item in image_items
+    ]
+
+
+def _cleanup_manual_upload_items(image_items: list[dict[str, Any]]) -> None:
+    for item in image_items:
+        raw_path = str(item.get("path", "")).strip()
+        if raw_path:
+            _unlink_if_exists(Path(raw_path))
+
+
+def _save_manual_history(
+    config: AppConfig,
+    request_id: str,
+    metadata: dict[str, Any],
+    *,
+    image_path: Path | None,
+) -> Path:
+    history_id = _safe_history_id(request_id)
+    if history_id is None:
+        raise ValueError("invalid manual history id")
+    history_dir = (config.output.outputs_dir / MANUAL_HISTORY_DIRNAME / history_id).resolve()
+    history_root = (config.output.outputs_dir / MANUAL_HISTORY_DIRNAME).resolve()
+    if not _is_relative_to(history_dir, history_root):
+        raise ValueError("manual history path escapes history directory")
+
+    rendered = compose_manual_print(
+        text=str(metadata.get("text") or ""),
+        image_path=image_path,
+        image_items=[
+            {
+                **item,
+                "path": Path(str(item.get("path", ""))),
+            }
+            for item in metadata.get("images", [])
+            if isinstance(item, dict) and str(item.get("path", "")).strip()
+        ],
+        printed_at=datetime.now().astimezone(),
+        config=config.layout,
+        border_style=str(metadata.get("border_style") or "thin"),
+        text_align=str(metadata.get("text_align") or "center"),
+        font_size=int(metadata.get("font_size") or config.layout.body_font_size),
+        label_width_px=int(metadata.get("label_width_px") or 0),
+        label_height_px=int(metadata.get("label_height_px") or 0),
+        image_scale_percent=int(metadata.get("image_scale_percent") or 100),
+        image_crop=bool(metadata.get("image_crop", False)),
+        image_rotation_degrees=int(metadata.get("image_rotation_degrees") or 0),
+    )
+    history_dir.mkdir(parents=True, exist_ok=True)
+    image_buffer = BytesIO()
+    rendered.save(image_buffer, format="PNG")
+    _atomic_write_bytes(history_dir / "composed-ticket.png", image_buffer.getvalue())
+    _atomic_write_text(
+        history_dir / "manual-print.json",
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+    )
+    return history_dir
+
+
+def _delete_manual_history(
+    config: AppConfig,
+    history_id: str,
+    *,
+    missing_ok: bool = False,
+) -> dict[str, Any]:
+    safe_id = _safe_history_id(history_id)
+    if safe_id is None:
+        raise ValueError("invalid manual history id")
+    history_root = (config.output.outputs_dir / MANUAL_HISTORY_DIRNAME).resolve()
+    target_dir = (history_root / safe_id).resolve()
+    if not _is_relative_to(target_dir, history_root):
+        raise ValueError("manual history path escapes history directory")
+    if not target_dir.exists():
+        if missing_ok:
+            return {"ok": True, "deleted": False, "id": safe_id}
+        raise ValueError("manual history entry not found")
+    if not target_dir.is_dir():
+        raise ValueError("manual history entry is not a directory")
+    shutil.rmtree(target_dir)
+    return {"ok": True, "deleted": True, "id": safe_id}
+
+
+def _manual_upload_path(outputs_dir: Path, *, request_id: str, filename: str) -> Path:
+    clean_name = Path(filename).name.strip()
+    if not clean_name or clean_name in {".", ".."}:
+        raise ValueError("invalid image filename")
+    suffix = Path(clean_name).suffix.lower()
+    if suffix not in IMAGE_EXTENSIONS:
+        raise ValueError("manual print only accepts image files")
+    uploads_dir = (outputs_dir / MANUAL_UPLOADS_DIRNAME).resolve()
+    target_path = (uploads_dir / request_id / clean_name).resolve()
+    if not _is_relative_to(target_path, uploads_dir):
+        raise ValueError("manual image path escapes uploads directory")
+    return target_path
+
+
+def _safe_history_id(value: str) -> str | None:
+    text = unquote(str(value or "")).strip().strip("/")
+    if not text or "/" in text or "\\" in text or ".." in Path(text).parts:
+        return None
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    if any(char not in allowed for char in text):
+        return None
+    return text
+
+
+def _validate_image_content(content: bytes) -> None:
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image.verify()
+    except Exception as exc:
+        raise ValueError("manual print only accepts valid image files") from exc
+
+
+def _manual_print_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("text must be a string")
+    text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) > MANUAL_PRINT_MAX_TEXT_CHARS:
+        raise ValueError(f"text must be {MANUAL_PRINT_MAX_TEXT_CHARS} characters or fewer")
+    return text
+
+
+def _manual_choice(value: Any, *, allowed: set[str], default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _manual_font_size(value: Any, default: int) -> int:
+    return _manual_number_range(
+        value,
+        default=default,
+        minimum=MANUAL_FONT_SIZE_MIN,
+        maximum=MANUAL_FONT_SIZE_MAX,
+    )
+
+
+def _manual_label_width(value: Any, config: AppConfig) -> int:
+    max_width = config.layout.paper_width_px - (config.layout.side_margin_px * 2)
+    return _manual_number_range(
+        value,
+        default=max_width,
+        minimum=min(MANUAL_LABEL_WIDTH_MIN, max_width),
+        maximum=max_width,
+    )
+
+
+def _manual_label_height(value: Any) -> int:
+    return _manual_number_range(
+        value,
+        default=220,
+        minimum=MANUAL_LABEL_HEIGHT_MIN,
+        maximum=MANUAL_LABEL_HEIGHT_MAX,
+    )
+
+
+def _manual_number_range(
+    value: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 def _required_text(value: Any, field_name: str) -> str:

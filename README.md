@@ -107,10 +107,87 @@ python3 -m callroo_printer --config config.json --dashboard --dashboard-host 127
 - 날짜별 출력 프리뷰 검색
 - 현재 서비스 상태, 최근 작업 상태, 최근 로그 확인
 - `지금 출력` 버튼으로 서비스에 출력 트리거 추가
+- `/print` 수동 프린터 페이지에서 원하는 문구나 그림 파일을 바로 출력 큐에 등록
 - `프롬프트 설정` 다이얼로그에서 프로필, 프롬프트, 모델 후보 수정
 - 권한 해제 뒤 프롬프트 프로필 추가/삭제
 - `아티팩트` 다이얼로그에서 그림/음악 업로드와 현재 등록된 파일 목록 확인
 - 음악 아티팩트는 브라우저 미디어 컨트롤로 미리 재생
+
+수동 프린터 페이지는 텍스트 입력과 그림 파일 업로드만 받습니다. 문서 파일(PDF, DOCX, TXT 등)은 업로드 대상이 아니며, 서버에서도 이미지 확장자와 실제 이미지 디코딩을 검증합니다. 출력 후보 PNG는 `layout.paper_width_px` 프린터 도트 폭(기본 384dot)에 맞춰 합성되고, 라벨 폭/높이와 그림 좌표도 같은 dot 기준으로 편집합니다. `/print` 캔버스에서 라벨 크기를 드래그로 조절하고 여러 그림을 올려 위치, 크기, 확대/축소, 크롭, 회전을 조정한 뒤 출력 큐에 넣을 수 있습니다. 선택한 그림의 x/y/폭/높이는 직접 입력할 수 있고, 범위를 벗어난 값은 유효한 dot 범위로 자동 보정됩니다. 제출 시 수동 출력 이력에도 PNG가 저장되어 프린터 서비스가 꺼져 있어도 브라우저에서 확인, 다운로드, 재출력, 삭제할 수 있습니다.
+
+간단한 REST 출력 API도 제공합니다. 모든 크기와 좌표 값은 최종 출력 후보 안의 프린터 dot 기준이며, 범위를 벗어난 값은 서버에서 유효 범위로 보정됩니다. 응답에는 공통으로 `ok`, `request_id`, `history_url`, `download_url`이 포함됩니다.
+
+문구 출력은 `POST /api/print/text`에 JSON으로 요청합니다.
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/print/text \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"바로 출력할 문구","label_width":220,"label_height":96,"border":"double","align":"center","font_size":30}'
+```
+
+문구 API 옵션:
+
+| 필드 | 설명 |
+| --- | --- |
+| `text` | 출력할 문구. 필수 |
+| `label_width` 또는 `label_width_px` | 라벨 폭 dot |
+| `label_height` 또는 `label_height_px` | 라벨 높이 dot |
+| `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
+| `align` 또는 `text_align` | `left`, `center`, `right` |
+| `font_size` | 글자 크기. 16-56 |
+
+그림 출력은 `POST /api/print/image`에 `multipart/form-data`로 파일과 옵션을 보냅니다.
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/print/image \
+  -F image=@./label.png \
+  -F label_width=284 \
+  -F label_height=180 \
+  -F border=thin \
+  -F image_width=240 \
+  -F image_height=140 \
+  -F image_x=0 \
+  -F image_y=0 \
+  -F rotation=0 \
+  -F crop=false
+```
+
+그림 API는 JSON base64 방식도 받습니다.
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/print/image \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "filename": "label.png",
+    "content_base64": "BASE64_ENCODED_IMAGE",
+    "label_width": 284,
+    "label_height": 180,
+    "image_width": 240,
+    "image_height": 140,
+    "crop": false
+  }'
+```
+
+그림 API 옵션:
+
+| 필드 | 설명 |
+| --- | --- |
+| `image` | multipart 파일 필드. JSON에서는 `image.filename`, `image.content_base64` 객체도 가능 |
+| `filename`, `content_base64` | JSON base64 업로드용 이미지 이름과 내용 |
+| `text` | 그림 위에 함께 올릴 문구. 선택 |
+| `label_width` 또는 `label_width_px` | 라벨 폭 dot |
+| `label_height` 또는 `label_height_px` | 라벨 높이 dot |
+| `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
+| `align` 또는 `text_align` | 함께 올린 문구 정렬. `left`, `center`, `right` |
+| `font_size` | 함께 올린 문구 글자 크기. 16-56 |
+| `image_x` 또는 `x` | 라벨 안쪽 기준 그림 X 좌표 |
+| `image_y` 또는 `y` | 라벨 안쪽 기준 그림 Y 좌표 |
+| `image_width`, `image_width_px`, 또는 `width` | 그림 폭 dot |
+| `image_height`, `image_height_px`, 또는 `height` | 그림 높이 dot |
+| `rotation`, `image_rotation_degrees`, 또는 `rotation_degrees` | 그림 회전 각도. -180-180 |
+| `crop` 또는 `image_crop` | `true`이면 지정한 그림 영역을 채우도록 크롭 |
+
+수동 출력 이력을 다시 출력하려면 `POST /api/manual-history/<request-id>/reprint`를 호출합니다. 기존 이력의 문구, 라벨, 이미지 위치/크기를 복제해 새 출력 요청으로 큐에 넣습니다.
 
 프롬프트/프로필 설정은 기본적으로 잠겨 있습니다. `config.json`의 `dashboard.edit_token`에 토큰을 넣고, 대시보드에서 같은 토큰을 입력해야 편집할 수 있습니다. 비워두면 호환성을 위해 저장 API가 토큰을 요구하지 않습니다.
 
@@ -204,6 +281,8 @@ sudo systemctl enable --now callroo-dashboard.service
 
 - 앱 로그: `logs/callroo-printer.log`
 - 트리거 큐: `outputs/dashboard-triggers.jsonl`
+- 수동 출력 업로드 임시 파일: `outputs/manual-uploads/<request-id>/`
+- 수동 출력 이력 PNG: `outputs/manual-history/<request-id>/composed-ticket.png`
 - 트리거별 산출물: `outputs/jobs/<timestamp>-<id>/`
 - 작업 폴더 주요 파일: `input.json`, `llm-request.json`, `llm-response.json`, `llm-error.json`, `llm-model.json`, `llm-attempts.json`, `fortune.txt`, `composed-ticket.png`, `print-job.bin`, `result.json`
 - `--dry-run`에서는 `print-job.bin`까지 만들지만 Bluetooth 전송은 하지 않습니다.

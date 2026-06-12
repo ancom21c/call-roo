@@ -19,7 +19,7 @@ from callroo_printer.config import (
     WeightedAudioFileConfig,
 )
 from callroo_printer.input_sources import TriggerEvent, TriggerSourceMonitor
-from callroo_printer.layout import compose_ticket
+from callroo_printer.layout import compose_manual_print, compose_ticket
 from callroo_printer.llm_client import LLMCallResult, OpenAICompatClient, sanitize_text
 from callroo_printer.printer import create_printer, resolve_bluetooth_adapter_names
 
@@ -27,6 +27,15 @@ LOGGER = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 RECENT_FORTUNE_HISTORY = 6
+MANUAL_PRINT_MAX_TEXT_CHARS = 1200
+MANUAL_UPLOADS_DIRNAME = "manual-uploads"
+MANUAL_LABEL_WIDTH_MIN = 80
+MANUAL_LABEL_HEIGHT_MIN = 56
+MANUAL_LABEL_HEIGHT_MAX = 1200
+MANUAL_IMAGE_SCALE_MIN = 25
+MANUAL_IMAGE_SCALE_MAX = 300
+MANUAL_IMAGE_ROTATION_MIN = -180
+MANUAL_IMAGE_ROTATION_MAX = 180
 
 
 class FortunePrinterService:
@@ -212,6 +221,18 @@ class FortunePrinterService:
                 trigger_source=trigger.source,
                 trigger_details=trigger.details,
             )
+            manual_payload = _manual_print_payload(trigger.details)
+            if manual_payload is not None:
+                result_payload, play_completion_sound = self._handle_manual_print_job(
+                    job,
+                    manual_payload,
+                    triggered_at=triggered_at,
+                )
+                if not self.config.cooldown_on_trigger:
+                    self._cooldown_until = time.monotonic() + self.config.cooldown_seconds
+                job.write_result(**result_payload)
+                return
+
             LOGGER.info("Generating fortune ticket in %s", job.root)
             llm_profile = self._select_llm_profile()
             job.write_json(
@@ -310,6 +331,223 @@ class FortunePrinterService:
                 launch_sound_player.stop()
             if play_completion_sound:
                 self._play_event_sound("print_completed", delay_seconds=1.0)
+
+    def _handle_manual_print_job(
+        self,
+        job: JobArtifacts,
+        payload: dict[str, object],
+        *,
+        triggered_at: datetime,
+    ) -> tuple[dict[str, object], bool]:
+        raw_text = payload.get("text")
+        text = sanitize_text(
+            raw_text if isinstance(raw_text, str) else "",
+            max_chars=MANUAL_PRINT_MAX_TEXT_CHARS,
+        )
+        border_style = _manual_choice(
+            payload.get("border_style"),
+            allowed={"none", "thin", "thick", "double"},
+            default="thin",
+        )
+        text_align = _manual_choice(
+            payload.get("text_align"),
+            allowed={"left", "center", "right"},
+            default="center",
+        )
+        font_size = _manual_int(payload.get("font_size"), default=self.config.layout.body_font_size)
+        max_label_width = self.config.layout.paper_width_px - (
+            self.config.layout.side_margin_px * 2
+        )
+        label_width_px = _manual_number_range(
+            payload.get("label_width_px"),
+            default=max_label_width,
+            minimum=min(MANUAL_LABEL_WIDTH_MIN, max_label_width),
+            maximum=max_label_width,
+        )
+        label_height_px = _manual_number_range(
+            payload.get("label_height_px"),
+            default=220,
+            minimum=MANUAL_LABEL_HEIGHT_MIN,
+            maximum=MANUAL_LABEL_HEIGHT_MAX,
+        )
+        image_scale_percent = _manual_number_range(
+            payload.get("image_scale_percent"),
+            default=100,
+            minimum=MANUAL_IMAGE_SCALE_MIN,
+            maximum=MANUAL_IMAGE_SCALE_MAX,
+        )
+        image_crop = bool(payload.get("image_crop", False))
+        image_rotation_degrees = _manual_number_range(
+            payload.get("image_rotation_degrees"),
+            default=0,
+            minimum=MANUAL_IMAGE_ROTATION_MIN,
+            maximum=MANUAL_IMAGE_ROTATION_MAX,
+        )
+        raw_image_items = payload.get("images")
+        if raw_image_items is not None and not isinstance(raw_image_items, list):
+            raise ValueError("manual image items must be a list")
+
+        image_path: Path | None = None
+        job_image_path: Path | None = None
+        job_image_items: list[dict[str, object]] = []
+        if isinstance(raw_image_items, list) and raw_image_items:
+            for index, item in enumerate(raw_image_items):
+                if not isinstance(item, dict):
+                    raise ValueError("manual image item must be an object")
+                source_path = _resolve_manual_image_path(
+                    item.get("path"),
+                    self.config.output.outputs_dir,
+                )
+                if source_path is None:
+                    continue
+                copied_path = job.write_bytes(
+                    f"manual-upload-{index + 1:02d}{source_path.suffix.lower()}",
+                    source_path.read_bytes(),
+                )
+                image_item = {
+                    "id": str(item.get("id") or f"image-{index + 1}"),
+                    "filename": str(item.get("filename") or source_path.name),
+                    "path": copied_path,
+                    "source_path": str(source_path),
+                    "x": _manual_number_range(
+                        item.get("x"),
+                        default=0,
+                        minimum=-label_width_px,
+                        maximum=label_width_px,
+                    ),
+                    "y": _manual_number_range(
+                        item.get("y"),
+                        default=0,
+                        minimum=-label_height_px,
+                        maximum=label_height_px,
+                    ),
+                    "width": _manual_number_range(
+                        item.get("width"),
+                        default=min(label_width_px, 180),
+                        minimum=1,
+                        maximum=max(1, label_width_px * 2),
+                    ),
+                    "height": _manual_number_range(
+                        item.get("height"),
+                        default=min(label_height_px, 120),
+                        minimum=1,
+                        maximum=max(1, label_height_px * 2),
+                    ),
+                    "rotation_degrees": _manual_number_range(
+                        item.get("rotation_degrees"),
+                        default=0,
+                        minimum=MANUAL_IMAGE_ROTATION_MIN,
+                        maximum=MANUAL_IMAGE_ROTATION_MAX,
+                    ),
+                    "crop": bool(item.get("crop", False)),
+                }
+                job_image_items.append(image_item)
+            if job_image_items:
+                first_path = job_image_items[0]["path"]
+                if isinstance(first_path, Path):
+                    job_image_path = first_path
+        else:
+            image_path = _resolve_manual_image_path(
+                payload.get("image_path"),
+                self.config.output.outputs_dir,
+            )
+
+        if image_path is not None:
+            job_image_path = job.write_bytes(
+                f"manual-upload{image_path.suffix.lower()}",
+                image_path.read_bytes(),
+            )
+
+        LOGGER.info("Composing manual print in %s", job.root)
+        job.write_json(
+            "manual-print.json",
+            {
+                "text": text,
+                "border_style": border_style,
+                "text_align": text_align,
+                "font_size": font_size,
+                "label_width_px": label_width_px,
+                "label_height_px": label_height_px,
+                "image_scale_percent": image_scale_percent,
+                "image_crop": image_crop,
+                "image_rotation_degrees": image_rotation_degrees,
+                "image_path": str(job_image_path or ""),
+                "source_image_path": str(image_path or ""),
+                "image_name": str(payload.get("image_name", "")),
+                "images": _manual_image_items_for_json(job_image_items),
+            },
+        )
+        job.write_text("fortune.txt", (text or "수동 이미지 출력") + "\n")
+        if job_image_path is not None:
+            job.write_json(
+                "selected-asset.json",
+                {
+                    "asset_path": str(job_image_path),
+                    "asset_name": job_image_path.name,
+                    "selected_tag": "manual",
+                },
+            )
+
+        ticket = compose_manual_print(
+            text=text,
+            image_path=job_image_path,
+            image_items=job_image_items,
+            printed_at=triggered_at,
+            config=self.config.layout,
+            border_style=border_style,
+            text_align=text_align,
+            font_size=font_size,
+            label_width_px=label_width_px,
+            label_height_px=label_height_px,
+            image_scale_percent=image_scale_percent,
+            image_crop=image_crop,
+            image_rotation_degrees=image_rotation_degrees,
+        )
+        ticket_path = job.save_image("composed-ticket.png", ticket)
+
+        for artifact in self.printer.build_artifacts(
+            image_path=ticket_path,
+            image=ticket,
+            threshold=self.config.layout.threshold,
+            trailing_feed_lines=self.config.trailing_feed_lines,
+        ):
+            job.write_bytes(artifact.filename, artifact.payload)
+
+        if self.dry_run:
+            status = "dry_run_completed"
+            LOGGER.info("Manual dry run complete. Inspect %s", job.root)
+            play_completion_sound = False
+        else:
+            self.printer.print_saved_image(
+                image_path=ticket_path,
+                image=ticket,
+                threshold=self.config.layout.threshold,
+                trailing_feed_lines=self.config.trailing_feed_lines,
+            )
+            status = "printed"
+            play_completion_sound = True
+            LOGGER.info("Printed manual dashboard job.")
+
+        return (
+            {
+                "status": status,
+                "triggered_at": triggered_at.isoformat(),
+                "asset_path": str(job_image_path or ""),
+                "selected_tag": "manual",
+                "manual_print": True,
+                "manual_border_style": border_style,
+                "manual_text_align": text_align,
+                "manual_font_size": font_size,
+                "manual_label_width_px": label_width_px,
+                "manual_label_height_px": label_height_px,
+                "manual_image_scale_percent": image_scale_percent,
+                "manual_image_crop": image_crop,
+                "manual_image_rotation_degrees": image_rotation_degrees,
+                "manual_image_count": len(job_image_items) if job_image_items else (1 if job_image_path else 0),
+                "dry_run": self.dry_run,
+            },
+            play_completion_sound,
+        )
 
     def _generate_fortune(
         self,
@@ -749,14 +987,19 @@ class DashboardTriggerMonitor:
         if not request_id:
             LOGGER.warning("Ignoring dashboard trigger line without request_id.")
             return None
+        details = {
+            "requested_at": str(payload.get("requested_at", "")),
+            "request_id": request_id,
+            "note": str(payload.get("note", "")),
+        }
+        manual_print = payload.get("manual_print")
+        if isinstance(manual_print, dict):
+            details["manual_print"] = manual_print
+
         return TriggerEvent(
             raw_input=str(payload.get("raw_input", "\n")),
             source="dashboard",
-            details={
-                "requested_at": str(payload.get("requested_at", "")),
-                "request_id": request_id,
-                "note": str(payload.get("note", "")),
-            },
+            details=details,
         )
 
 
@@ -776,6 +1019,82 @@ def _load_processed_dashboard_request_ids(jobs_dir: Path) -> set[str]:
         if isinstance(request_id, str) and request_id.strip():
             request_ids.add(request_id.strip())
     return request_ids
+
+
+def _manual_print_payload(details: dict[str, object]) -> dict[str, object] | None:
+    payload = details.get("manual_print")
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _manual_choice(value: object, *, allowed: set[str], default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _manual_int(value: object, *, default: int) -> int:
+    return _manual_number_range(value, default=default, minimum=16, maximum=56)
+
+
+def _manual_number_range(
+    value: object,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _resolve_manual_image_path(value: object, outputs_dir: Path) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = Path(value).expanduser().resolve()
+    uploads_dir = (outputs_dir / MANUAL_UPLOADS_DIRNAME).resolve()
+    if not _is_relative_to(candidate, uploads_dir):
+        raise ValueError("manual image path must be inside manual uploads directory")
+    if not candidate.is_file():
+        raise ValueError("manual image file not found")
+    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("manual print only accepts image files")
+    return candidate
+
+
+def _manual_image_items_for_json(
+    image_items: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": str(item.get("id", "")),
+            "filename": str(item.get("filename", "")),
+            "path": str(item.get("path", "")),
+            "source_path": str(item.get("source_path", "")),
+            "x": int(item.get("x", 0)),
+            "y": int(item.get("y", 0)),
+            "width": int(item.get("width", 1)),
+            "height": int(item.get("height", 1)),
+            "rotation_degrees": int(item.get("rotation_degrees", 0)),
+            "crop": bool(item.get("crop", False)),
+        }
+        for item in image_items
+    ]
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _load_json_object(path: Path) -> dict[str, object]:

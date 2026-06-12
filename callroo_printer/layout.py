@@ -19,6 +19,16 @@ TEXT_BOX_RADIUS = 10
 TEXT_BOX_INSET = 4
 TITLE_ICON_GAP_RATIO = 0.32
 NO_LINE_START_CHARS = tuple(".,!?;:)]}）］｝〉》」』”’、。，！？：；…")
+MANUAL_BOX_PADDING_X = 16
+MANUAL_BOX_PADDING_Y = 16
+MANUAL_BOX_RADIUS = 12
+MANUAL_BORDER_STYLES = {"none", "thin", "thick", "double"}
+MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
+MANUAL_LABEL_WIDTH_MIN = 80
+MANUAL_LABEL_HEIGHT_MIN = 56
+MANUAL_LABEL_HEIGHT_MAX = 1200
+MANUAL_IMAGE_SCALE_MIN = 25
+MANUAL_IMAGE_SCALE_MAX = 300
 
 
 def compose_ticket(
@@ -125,6 +135,195 @@ def compose_ticket(
     return canvas
 
 
+def compose_manual_print(
+    *,
+    text: str,
+    image_path: Path | None,
+    image_items: list[dict[str, object]] | None = None,
+    printed_at: datetime,
+    config: LayoutConfig,
+    border_style: str = "thin",
+    text_align: str = "center",
+    font_size: int | None = None,
+    label_width_px: int | None = None,
+    label_height_px: int | None = None,
+    image_scale_percent: int = 100,
+    image_crop: bool = False,
+    image_rotation_degrees: int = 0,
+) -> Image.Image:
+    del printed_at
+    clean_text = text.strip()
+    positioned_images = _normalize_manual_image_items(image_items, image_path)
+    if not clean_text and not positioned_images:
+        raise ValueError("manual print requires text or image")
+
+    normalized_border = (
+        border_style.strip().lower()
+        if border_style.strip().lower() in MANUAL_BORDER_STYLES
+        else "thin"
+    )
+    normalized_align = (
+        text_align.strip().lower()
+        if text_align.strip().lower() in MANUAL_TEXT_ALIGNS
+        else "center"
+    )
+    text_size = _clamp_int(font_size or config.body_font_size, 16, 56)
+    body_font = load_font(config.font_path, text_size)
+
+    max_label_width = config.paper_width_px - (config.side_margin_px * 2)
+    label_width = _clamp_int(
+        label_width_px or max_label_width,
+        min(MANUAL_LABEL_WIDTH_MIN, max_label_width),
+        max_label_width,
+    )
+    fixed_label_height = (
+        _clamp_int(label_height_px, MANUAL_LABEL_HEIGHT_MIN, MANUAL_LABEL_HEIGHT_MAX)
+        if label_height_px is not None
+        else None
+    )
+    inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
+    inner_height = (
+        max(1, fixed_label_height - (MANUAL_BOX_PADDING_Y * 2))
+        if fixed_label_height is not None
+        else None
+    )
+    image_scale = _clamp_int(
+        image_scale_percent,
+        MANUAL_IMAGE_SCALE_MIN,
+        MANUAL_IMAGE_SCALE_MAX,
+    )
+    sections: list[tuple[str, Image.Image | str]] = []
+
+    text_lines = ""
+    text_height = 0
+    if clean_text:
+        measuring_image = Image.new("L", (config.paper_width_px, 10), color=255)
+        measuring_draw = ImageDraw.Draw(measuring_image)
+        text_lines = wrap_text_by_width(clean_text, body_font, inner_width)
+        text_bbox = measuring_draw.multiline_textbbox(
+            (0, 0),
+            text_lines,
+            font=body_font,
+            spacing=6,
+        )
+        text_height = _bbox_height(text_bbox)
+
+    image_slot_height = max(80, config.image_max_height_px)
+    if positioned_images and inner_height is not None:
+        image_slot_height = max(
+            1,
+            inner_height
+            - (text_height if clean_text else 0)
+            - (config.section_gap_px if clean_text else 0),
+        )
+
+    legacy_flow = len(positioned_images) == 1 and not positioned_images[0].get("positioned")
+    if legacy_flow:
+        legacy_image_path = positioned_images[0]["path"]
+        assert isinstance(legacy_image_path, Path)
+        sections.append(
+            (
+                "image",
+                _prepare_manual_asset(
+                    legacy_image_path,
+                    inner_width,
+                    image_slot_height,
+                    scale_percent=image_scale,
+                    crop=image_crop,
+                    rotation_degrees=image_rotation_degrees,
+                ),
+            )
+        )
+    if clean_text:
+        sections.append(("text", text_lines))
+
+    gap_total = config.section_gap_px * max(0, len(sections) - 1)
+    content_height = gap_total
+    for kind, value in sections:
+        if kind == "image":
+            assert isinstance(value, Image.Image)
+            content_height += value.height
+        else:
+            content_height += text_height
+
+    box_height = fixed_label_height or content_height + (MANUAL_BOX_PADDING_Y * 2)
+    total_height = config.side_margin_px + box_height + config.side_margin_px
+    canvas = Image.new("L", (config.paper_width_px, total_height), color=255)
+    draw = ImageDraw.Draw(canvas)
+
+    box_left = (config.paper_width_px - label_width) // 2
+    box = (
+        box_left,
+        config.side_margin_px,
+        box_left + label_width - 1,
+        config.side_margin_px + box_height - 1,
+    )
+    _draw_manual_border(draw, box, normalized_border)
+
+    if positioned_images and not legacy_flow:
+        for item in positioned_images:
+            item_path = item["path"]
+            assert isinstance(item_path, Path)
+            item_width = _clamp_int(
+                int(item.get("width", inner_width)),
+                1,
+                label_width,
+            )
+            item_height = _clamp_int(
+                int(item.get("height", image_slot_height)),
+                1,
+                box_height,
+            )
+            item_x = _clamp_int(int(item.get("x", 0)), -label_width, label_width)
+            item_y = _clamp_int(int(item.get("y", 0)), -box_height, box_height)
+            item_rotation = _clamp_int(int(item.get("rotation_degrees", 0)), -180, 180)
+            item_crop = bool(item.get("crop", False))
+            prepared = _prepare_manual_asset(
+                item_path,
+                item_width,
+                item_height,
+                scale_percent=100,
+                crop=item_crop,
+                rotation_degrees=item_rotation,
+            )
+            _paste_clipped(
+                canvas,
+                prepared,
+                box[0] + MANUAL_BOX_PADDING_X + item_x,
+                box[1] + MANUAL_BOX_PADDING_Y + item_y,
+                box,
+            )
+
+    spare_height = max(0, box_height - (MANUAL_BOX_PADDING_Y * 2) - content_height)
+    cursor_y = box[1] + MANUAL_BOX_PADDING_Y + (spare_height // 2)
+    for index, (kind, value) in enumerate(sections):
+        if index:
+            cursor_y += config.section_gap_px
+        if kind == "image":
+            assert isinstance(value, Image.Image)
+            x = box[0] + MANUAL_BOX_PADDING_X + ((inner_width - value.width) // 2)
+            _paste_clipped(canvas, value, x, cursor_y, box)
+            cursor_y += value.height
+            continue
+
+        assert isinstance(value, str)
+        text_image = Image.new("L", (inner_width, max(1, text_height)), color=255)
+        text_draw = ImageDraw.Draw(text_image)
+        _draw_aligned_multiline_text(
+            text_draw,
+            value,
+            body_font,
+            0,
+            0,
+            inner_width,
+            normalized_align,
+        )
+        _paste_clipped(canvas, text_image, box[0] + MANUAL_BOX_PADDING_X, cursor_y, box)
+        cursor_y += text_height
+
+    return canvas
+
+
 def wrap_text_by_width(text: str, font: ImageFont.ImageFont, max_width: int) -> str:
     probe = Image.new("L", (max_width, 10), color=255)
     draw = ImageDraw.Draw(probe)
@@ -184,6 +383,107 @@ def _prepare_asset(asset_path: Path, max_width: int, max_height: int) -> Image.I
         offset_x = (max_width - fitted.width) // 2
         canvas.paste(fitted, (offset_x, 0))
         return canvas
+
+
+def _normalize_manual_image_items(
+    image_items: list[dict[str, object]] | None,
+    fallback_image_path: Path | None,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    if image_items:
+        for item in image_items:
+            raw_path = item.get("path")
+            if raw_path is None:
+                continue
+            path = raw_path if isinstance(raw_path, Path) else Path(str(raw_path))
+            normalized.append(
+                {
+                    "path": path,
+                    "x": int(item.get("x", 0)),
+                    "y": int(item.get("y", 0)),
+                    "width": int(item.get("width", 1)),
+                    "height": int(item.get("height", 1)),
+                    "rotation_degrees": int(item.get("rotation_degrees", 0)),
+                    "crop": bool(item.get("crop", False)),
+                    "positioned": True,
+                }
+            )
+    if normalized:
+        return normalized
+    if fallback_image_path is None:
+        return []
+    return [{"path": fallback_image_path, "positioned": False}]
+
+
+def _prepare_manual_asset(
+    asset_path: Path,
+    max_width: int,
+    max_height: int,
+    *,
+    scale_percent: int,
+    crop: bool,
+    rotation_degrees: int,
+) -> Image.Image:
+    with Image.open(asset_path) as image:
+        grayscale = image.convert("L")
+        if rotation_degrees % 360:
+            grayscale = grayscale.rotate(
+                -rotation_degrees,
+                expand=True,
+                fillcolor=255,
+            )
+        base_scale = (
+            max(max_width / grayscale.width, max_height / grayscale.height)
+            if crop
+            else min(max_width / grayscale.width, max_height / grayscale.height)
+        )
+        scale = max(0.01, base_scale * (scale_percent / 100))
+        target_size = (
+            max(1, round(grayscale.width * scale)),
+            max(1, round(grayscale.height * scale)),
+        )
+        resized = grayscale.resize(target_size, Image.Resampling.LANCZOS)
+        if crop:
+            return _center_on_canvas(resized, max_width, max_height)
+        if resized.width <= max_width and resized.height <= max_height:
+            return resized
+        return _center_crop(resized, max_width, max_height)
+
+
+def _center_on_canvas(image: Image.Image, width: int, height: int) -> Image.Image:
+    canvas = Image.new("L", (width, height), color=255)
+    crop = _center_crop(image, width, height)
+    offset = (
+        (width - crop.width) // 2,
+        (height - crop.height) // 2,
+    )
+    canvas.paste(crop, offset)
+    return canvas
+
+
+def _center_crop(image: Image.Image, width: int, height: int) -> Image.Image:
+    crop_width = min(width, image.width)
+    crop_height = min(height, image.height)
+    left = max(0, (image.width - crop_width) // 2)
+    top = max(0, (image.height - crop_height) // 2)
+    return image.crop((left, top, left + crop_width, top + crop_height))
+
+
+def _paste_clipped(
+    canvas: Image.Image,
+    image: Image.Image,
+    x: int,
+    y: int,
+    clip_box: tuple[int, int, int, int],
+) -> None:
+    left = max(x, clip_box[0] + MANUAL_BOX_PADDING_X)
+    top = max(y, clip_box[1] + MANUAL_BOX_PADDING_Y)
+    right = min(x + image.width, clip_box[2] - MANUAL_BOX_PADDING_X + 1)
+    bottom = min(y + image.height, clip_box[3] - MANUAL_BOX_PADDING_Y + 1)
+    if right <= left or bottom <= top:
+        return
+    crop = image.crop((left - x, top - y, right - x, bottom - y))
+    canvas.paste(crop, (left, top))
 
 
 def _prepare_title_icon(icon_path: Path | None, target_size: int) -> Image.Image | None:
@@ -262,6 +562,52 @@ def _draw_text_box(
     draw.line((box[2] - 6, accent_top, box[2] - 6, accent_bottom), fill=0, width=1)
 
 
+def _draw_manual_border(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    border_style: str,
+) -> None:
+    if border_style == "none":
+        return
+    if border_style == "thick":
+        draw.rounded_rectangle(box, radius=MANUAL_BOX_RADIUS, outline=0, width=4)
+        return
+    if border_style == "double":
+        draw.rounded_rectangle(box, radius=MANUAL_BOX_RADIUS, outline=0, width=2)
+        inner = (
+            box[0] + 6,
+            box[1] + 6,
+            box[2] - 6,
+            box[3] - 6,
+        )
+        draw.rounded_rectangle(inner, radius=max(1, MANUAL_BOX_RADIUS - 4), outline=145, width=1)
+        return
+    draw.rounded_rectangle(box, radius=MANUAL_BOX_RADIUS, outline=0, width=2)
+
+
+def _draw_aligned_multiline_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    x: int,
+    y: int,
+    width: int,
+    align: str,
+) -> None:
+    line_y = y
+    for line in text.splitlines() or [""]:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_width = _bbox_width(bbox)
+        if align == "left":
+            line_x = x
+        elif align == "right":
+            line_x = x + width - line_width
+        else:
+            line_x = x + ((width - line_width) // 2)
+        draw.text((line_x - bbox[0], line_y - bbox[1]), line, fill=0, font=font)
+        line_y += _bbox_height(bbox) + 6
+
+
 def _avoid_orphan_punctuation(
     lines: list[str],
     font: ImageFont.ImageFont,
@@ -319,3 +665,7 @@ def _bbox_height(bbox: tuple[int, int, int, int]) -> int:
 
 def _bbox_width(bbox: tuple[int, int, int, int]) -> int:
     return bbox[2] - bbox[0]
+
+
+def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))

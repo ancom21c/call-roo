@@ -3,11 +3,15 @@ from __future__ import annotations
 import unittest
 import json
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
+
 from callroo_printer.artifacts import ArtifactManager
+from callroo_printer.config import LayoutConfig
 from callroo_printer.service import DashboardTriggerMonitor, FortunePrinterService
 
 
@@ -183,6 +187,26 @@ class ServiceBluetoothResetTest(unittest.TestCase):
         self.assertEqual(event.details["request_id"], "abc123")
         self.assertEqual(event.details["note"], "manual")
 
+    def test_dashboard_trigger_monitor_preserves_manual_print_payload(self) -> None:
+        line = json.dumps(
+            {
+                "request_id": "manual123",
+                "raw_input": "직접 출력",
+                "manual_print": {
+                    "text": "직접 출력",
+                    "border_style": "thick",
+                    "image_path": "/tmp/manual.png",
+                },
+            }
+        )
+
+        event = DashboardTriggerMonitor._parse_line(line + "\n")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.raw_input, "직접 출력")
+        self.assertEqual(event.details["manual_print"]["border_style"], "thick")
+
     def test_dashboard_trigger_monitor_ignores_malformed_trigger_lines(self) -> None:
         self.assertIsNone(DashboardTriggerMonitor._parse_line("{not json\n"))
         self.assertIsNone(DashboardTriggerMonitor._parse_line("[]\n"))
@@ -251,6 +275,132 @@ class ServiceBluetoothResetTest(unittest.TestCase):
             self.assertEqual(monitor._enqueue_existing_unprocessed_triggers(), 0)
             self.assertIsNone(monitor.next_trigger(timeout_seconds=0.0))
 
+    def test_manual_print_job_dry_run_builds_artifacts_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs_dir = root / "outputs"
+            uploads_dir = outputs_dir / "manual-uploads" / "abc123"
+            uploads_dir.mkdir(parents=True)
+            image_path = uploads_dir / "manual.png"
+            Image.new("RGB", (40, 30), color="black").save(image_path)
+
+            service = FortunePrinterService.__new__(FortunePrinterService)
+            service.config = SimpleNamespace(
+                output=SimpleNamespace(outputs_dir=outputs_dir),
+                layout=_layout_config(),
+                trailing_feed_lines=3,
+            )
+            service.dry_run = True
+            service.printer = _ArtifactPrinter()
+            job = ArtifactManager(outputs_dir).create_job(
+                triggered_at=datetime(2026, 6, 12, 10, 30, 0),
+                raw_input="직접 출력",
+                dry_run=True,
+                trigger_source="dashboard",
+                trigger_details={"request_id": "abc123"},
+            )
+
+            result, play_sound = service._handle_manual_print_job(
+                job,
+                {
+                    "text": "직접 출력",
+                    "image_path": str(image_path),
+                    "border_style": "thick",
+                    "text_align": "left",
+                    "font_size": 30,
+                    "label_width_px": 200,
+                    "label_height_px": 100,
+                    "image_scale_percent": 160,
+                    "image_crop": True,
+                    "image_rotation_degrees": 90,
+                },
+                triggered_at=datetime(2026, 6, 12, 10, 30, 0),
+            )
+
+            self.assertFalse(play_sound)
+            self.assertEqual(result["status"], "dry_run_completed")
+            self.assertTrue(result["manual_print"])
+            self.assertTrue((job.root / "composed-ticket.png").is_file())
+            self.assertTrue((job.root / "print-job.bin").is_file())
+            self.assertEqual((job.root / "fortune.txt").read_text(encoding="utf-8").strip(), "직접 출력")
+            manual_payload = json.loads((job.root / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(manual_payload["border_style"], "thick")
+            self.assertEqual(manual_payload["text_align"], "left")
+            self.assertEqual(manual_payload["label_width_px"], 200)
+            self.assertEqual(manual_payload["label_height_px"], 100)
+            self.assertEqual(manual_payload["image_scale_percent"], 160)
+            self.assertTrue(manual_payload["image_crop"])
+            self.assertEqual(manual_payload["image_rotation_degrees"], 90)
+
+    def test_manual_print_job_handles_multiple_positioned_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs_dir = root / "outputs"
+            uploads_dir = outputs_dir / "manual-uploads" / "abc123"
+            uploads_dir.mkdir(parents=True)
+            first_path = uploads_dir / "first.png"
+            second_path = uploads_dir / "second.png"
+            Image.new("RGB", (40, 30), color="black").save(first_path)
+            Image.new("RGB", (24, 24), color="black").save(second_path)
+
+            service = FortunePrinterService.__new__(FortunePrinterService)
+            service.config = SimpleNamespace(
+                output=SimpleNamespace(outputs_dir=outputs_dir),
+                layout=_layout_config(),
+                trailing_feed_lines=3,
+            )
+            service.dry_run = True
+            service.printer = _ArtifactPrinter()
+            job = ArtifactManager(outputs_dir).create_job(
+                triggered_at=datetime(2026, 6, 12, 10, 30, 0),
+                raw_input="직접 출력",
+                dry_run=True,
+                trigger_source="dashboard",
+                trigger_details={"request_id": "abc123"},
+            )
+
+            result, play_sound = service._handle_manual_print_job(
+                job,
+                {
+                    "text": "",
+                    "label_width_px": 220,
+                    "label_height_px": 120,
+                    "images": [
+                        {
+                            "id": "first",
+                            "filename": "first.png",
+                            "path": str(first_path),
+                            "x": 8,
+                            "y": 10,
+                            "width": 80,
+                            "height": 60,
+                            "rotation_degrees": 30,
+                            "crop": True,
+                        },
+                        {
+                            "id": "second",
+                            "filename": "second.png",
+                            "path": str(second_path),
+                            "x": 100,
+                            "y": 20,
+                            "width": 40,
+                            "height": 40,
+                        },
+                    ],
+                },
+                triggered_at=datetime(2026, 6, 12, 10, 30, 0),
+            )
+
+            self.assertFalse(play_sound)
+            self.assertEqual(result["manual_image_count"], 2)
+            self.assertTrue((job.root / "manual-upload-01.png").is_file())
+            self.assertTrue((job.root / "manual-upload-02.png").is_file())
+            self.assertTrue((job.root / "composed-ticket.png").is_file())
+            manual_payload = json.loads((job.root / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manual_payload["images"]), 2)
+            self.assertEqual(manual_payload["images"][0]["x"], 8)
+            self.assertTrue(manual_payload["images"][0]["crop"])
+
 
 class _FakePrinter:
     def __init__(self) -> None:
@@ -258,6 +408,38 @@ class _FakePrinter:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class _ArtifactPrinter:
+    def build_artifacts(
+        self,
+        *,
+        image_path: Path,
+        image,
+        threshold: int,
+        trailing_feed_lines: int,
+    ):
+        del image_path, image, threshold, trailing_feed_lines
+        return [SimpleNamespace(filename="print-job.bin", payload=b"manual-job")]
+
+    def print_saved_image(self, **kwargs) -> None:
+        raise AssertionError("dry-run manual print should not send to printer")
+
+
+def _layout_config() -> LayoutConfig:
+    return LayoutConfig(
+        paper_width_px=384,
+        side_margin_px=20,
+        section_gap_px=16,
+        image_max_height_px=120,
+        title_icon_file=None,
+        title_font_size=28,
+        body_font_size=24,
+        timestamp_font_size=18,
+        font_path=None,
+        threshold=160,
+        max_fortune_chars=100,
+    )
 
 
 def _build_service(

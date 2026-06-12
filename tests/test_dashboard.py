@@ -4,21 +4,32 @@ import json
 import os
 import tempfile
 import unittest
+import base64
+from io import BytesIO
 from http import HTTPStatus
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
+
+from PIL import Image
 
 from callroo_printer.config import load_config
 from callroo_printer.dashboard import (
     DashboardSnapshotBuilder,
     LOG_STALE_SECONDS,
     _DASHBOARD_HTML,
+    _PRINTER_DASHBOARD_HTML,
     detect_service_config_path,
     _create_llm_profile_config,
     _delete_llm_profile_config,
     _build_health_response,
+    _delete_manual_history,
+    _parse_multipart_form,
     _queue_dashboard_print,
+    _queue_manual_history_reprint,
+    _queue_manual_print,
+    _queue_rest_image_print,
+    _queue_rest_text_print,
     _update_llm_profile_config,
     _upload_asset,
     _verify_dashboard_edit_token,
@@ -53,6 +64,36 @@ class DashboardHtmlTest(unittest.TestCase):
         self.assertIn(f'<link rel="icon" type="image/png" href="{asset_url}">', _DASHBOARD_HTML)
         self.assertIn(f'<link rel="apple-touch-icon" href="{asset_url}">', _DASHBOARD_HTML)
         self.assertIn(f'<img class="hero-mark" src="{asset_url}"', _DASHBOARD_HTML)
+
+    def test_dashboard_links_to_manual_printer_page(self) -> None:
+        self.assertIn('href="/print"', _DASHBOARD_HTML)
+        self.assertIn("MANUAL PRINTER DASHBOARD", _PRINTER_DASHBOARD_HTML)
+        self.assertIn('href="/"', _PRINTER_DASHBOARD_HTML)
+
+    def test_manual_printer_page_rejects_document_uploads_in_ui(self) -> None:
+        self.assertIn(
+            'accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"',
+            _PRINTER_DASHBOARD_HTML,
+        )
+        self.assertIn("PDF, DOCX, TXT", _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="label-width"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="label-height"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-scale"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-rotation"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-crop"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-x"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-y"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-width"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="image-height"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="fit-selected-image"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn("URL.createObjectURL(file)", _PRINTER_DASHBOARD_HTML)
+        self.assertIn("URL.revokeObjectURL", _PRINTER_DASHBOARD_HTML)
+        self.assertIn("renderCanvasImages(imageLayer, options)", _PRINTER_DASHBOARD_HTML)
+        self.assertIn('multiple>', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="canvas-image-layer"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="label-resize-handle"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('data-reprint-history', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="manual-history-list"', _PRINTER_DASHBOARD_HTML)
 
 
 class DashboardHealthTest(unittest.TestCase):
@@ -545,6 +586,300 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             payload = json.loads(records[1])
             self.assertEqual(payload["request_id"], result["request_id"])
             self.assertEqual(payload["note"], "after-truncation")
+
+    def test_queue_manual_print_appends_text_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_manual_print(
+                config,
+                {
+                    "text": "바로 출력할 문구",
+                    "border_style": "double",
+                    "text_align": "left",
+                    "font_size": 32,
+                    "label_width_px": 220,
+                    "label_height_px": 96,
+                    "image_scale_percent": 150,
+                    "image_crop": True,
+                    "image_rotation_degrees": 90,
+                },
+            )
+
+            self.assertTrue(result["ok"])
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(payload["request_id"], result["request_id"])
+            self.assertEqual(payload["note"], "manual-print")
+            self.assertEqual(payload["manual_print"]["text"], "바로 출력할 문구")
+            self.assertEqual(payload["manual_print"]["border_style"], "double")
+            self.assertEqual(payload["manual_print"]["text_align"], "left")
+            self.assertEqual(payload["manual_print"]["label_width_px"], 220)
+            self.assertEqual(payload["manual_print"]["label_height_px"], 96)
+            self.assertEqual(payload["manual_print"]["image_scale_percent"], 150)
+            self.assertTrue(payload["manual_print"]["image_crop"])
+            self.assertEqual(payload["manual_print"]["image_rotation_degrees"], 90)
+            self.assertFalse(payload["manual_print"]["image_path"])
+            history_image = config.output.outputs_dir / "manual-history" / result["request_id"] / "composed-ticket.png"
+            self.assertTrue(history_image.is_file())
+
+    def test_queue_manual_print_saves_valid_image_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_manual_print(
+                config,
+                {
+                    "text": "",
+                    "image": {
+                        "filename": "manual.png",
+                        "content_base64": _png_base64(),
+                    },
+                },
+            )
+
+            self.assertTrue(result["has_image"])
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            image_path = Path(payload["manual_print"]["image_path"])
+            self.assertTrue(image_path.is_file())
+            self.assertEqual(image_path.suffix, ".png")
+            self.assertTrue(image_path.is_relative_to(config.output.outputs_dir / "manual-uploads"))
+            history_dir = config.output.outputs_dir / "manual-history" / result["request_id"]
+            self.assertTrue((history_dir / "composed-ticket.png").is_file())
+            history_payload = json.loads((history_dir / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(history_payload["image_name"], "manual.png")
+            history = DashboardSnapshotBuilder(config).list_manual_history()
+            self.assertEqual(history[0]["output_width_px"], config.layout.paper_width_px)
+
+    def test_queue_manual_print_saves_multiple_positioned_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_manual_print(
+                config,
+                {
+                    "text": "두 장",
+                    "label_width_px": 220,
+                    "label_height_px": 120,
+                    "images": [
+                        {
+                            "id": "first",
+                            "filename": "first.png",
+                            "content_base64": _png_base64(),
+                            "x": 10,
+                            "y": 12,
+                            "width": 70,
+                            "height": 50,
+                            "rotation_degrees": 15,
+                            "crop": True,
+                        },
+                        {
+                            "id": "second",
+                            "filename": "second.png",
+                            "content_base64": _png_base64(),
+                            "x": 90,
+                            "y": 24,
+                            "width": 60,
+                            "height": 40,
+                        },
+                    ],
+                },
+            )
+
+            self.assertTrue(result["has_image"])
+            self.assertEqual(result["image_count"], 2)
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            images = payload["manual_print"]["images"]
+            self.assertEqual(len(images), 2)
+            self.assertEqual(images[0]["x"], 10)
+            self.assertEqual(images[0]["width"], 70)
+            self.assertTrue(images[0]["crop"])
+            self.assertTrue(Path(images[0]["path"]).is_file())
+            history_dir = config.output.outputs_dir / "manual-history" / result["request_id"]
+            history_payload = json.loads((history_dir / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(history_payload["images"]), 2)
+
+    def test_queue_rest_text_print_accepts_label_and_border_params(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_rest_text_print(
+                config,
+                {
+                    "text": "REST 문구",
+                    "label_width": "216",
+                    "label_height": "92",
+                    "border": "double",
+                    "align": "right",
+                    "font_size": "30",
+                },
+            )
+
+            self.assertTrue(result["ok"])
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            manual = payload["manual_print"]
+            self.assertEqual(manual["text"], "REST 문구")
+            self.assertEqual(manual["label_width_px"], 216)
+            self.assertEqual(manual["label_height_px"], 92)
+            self.assertEqual(manual["border_style"], "double")
+            self.assertEqual(manual["text_align"], "right")
+            self.assertEqual(manual["font_size"], 30)
+
+    def test_queue_rest_image_print_accepts_file_payload_and_params(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_rest_image_print(
+                config,
+                {
+                    "image": {
+                        "filename": "rest.png",
+                        "content_base64": _png_base64(),
+                    },
+                    "label_width_px": "240",
+                    "label_height_px": "120",
+                    "border_style": "thick",
+                    "image_width": "180",
+                    "image_height": "80",
+                    "image_x": "12",
+                    "image_y": "8",
+                    "rotation": "15",
+                    "crop": "true",
+                },
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["image_count"], 1)
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            manual = payload["manual_print"]
+            self.assertEqual(manual["label_width_px"], 240)
+            self.assertEqual(manual["label_height_px"], 120)
+            self.assertEqual(manual["border_style"], "thick")
+            self.assertEqual(manual["images"][0]["width"], 180)
+            self.assertEqual(manual["images"][0]["height"], 80)
+            self.assertEqual(manual["images"][0]["x"], 12)
+            self.assertEqual(manual["images"][0]["rotation_degrees"], 15)
+            self.assertTrue(manual["images"][0]["crop"])
+            self.assertTrue(Path(manual["images"][0]["path"]).is_file())
+
+    def test_parse_multipart_form_extracts_image_file_and_fields(self) -> None:
+        boundary = "callroo-test-boundary"
+        raw_body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="label_width"\r\n'
+            "\r\n"
+            "200\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="image"; filename="rest.png"\r\n'
+            "Content-Type: image/png\r\n"
+            "\r\n"
+        ).encode("utf-8") + base64.b64decode(_png_base64()) + (
+            f"\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+
+        payload = _parse_multipart_form(
+            f"multipart/form-data; boundary={boundary}",
+            raw_body,
+        )
+
+        self.assertEqual(payload["label_width"], "200")
+        self.assertEqual(payload["image"]["filename"], "rest.png")
+        self.assertTrue(payload["image"]["content_base64"])
+
+    def test_delete_manual_history_removes_only_history_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            result = _queue_manual_print(config, {"text": "삭제할 이력"})
+            history_dir = config.output.outputs_dir / "manual-history" / result["request_id"]
+
+            deleted = _delete_manual_history(config, result["request_id"])
+
+            self.assertTrue(deleted["ok"])
+            self.assertTrue(deleted["deleted"])
+            self.assertFalse(history_dir.exists())
+            self.assertTrue((config.output.outputs_dir / "dashboard-triggers.jsonl").is_file())
+
+    def test_queue_manual_history_reprint_duplicates_history_and_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            original = _queue_manual_print(
+                config,
+                {
+                    "text": "다시 출력",
+                    "label_width_px": 220,
+                    "label_height_px": 110,
+                    "images": [
+                        {
+                            "id": "first",
+                            "filename": "original.png",
+                            "content_base64": _png_base64(),
+                            "x": 10,
+                            "y": 8,
+                            "width": 80,
+                            "height": 40,
+                        },
+                    ],
+                },
+            )
+
+            result = _queue_manual_history_reprint(config, original["request_id"])
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["reprinted_from"], original["request_id"])
+            self.assertNotEqual(result["request_id"], original["request_id"])
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            records = [
+                json.loads(line)
+                for line in trigger_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(records[-1]["note"], "manual-reprint")
+            manual = records[-1]["manual_print"]
+            self.assertEqual(manual["text"], "다시 출력")
+            self.assertEqual(manual["label_width_px"], 220)
+            self.assertEqual(manual["images"][0]["x"], 10)
+            self.assertTrue(Path(manual["images"][0]["path"]).is_file())
+            original_image_path = Path(records[0]["manual_print"]["images"][0]["path"])
+            reprint_image_path = Path(manual["images"][0]["path"])
+            self.assertNotEqual(original_image_path, reprint_image_path)
+            history_dir = config.output.outputs_dir / "manual-history" / result["request_id"]
+            history_payload = json.loads((history_dir / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(history_payload["reprinted_from"], original["request_id"])
+
+    def test_queue_manual_print_rejects_document_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            with self.assertRaisesRegex(ValueError, "image files"):
+                _queue_manual_print(
+                    config,
+                    {
+                        "text": "문서 말고 이미지",
+                        "image": {
+                            "filename": "brief.pdf",
+                            "content_base64": "JVBERi0xLjQ=",
+                        },
+                    },
+                )
+
+            self.assertFalse((config.output.outputs_dir / "dashboard-triggers.jsonl").exists())
+
+
+def _png_base64() -> str:
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), color="black").save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _write_config(root: Path):

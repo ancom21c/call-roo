@@ -261,21 +261,31 @@ def compose_manual_print(
     _draw_manual_border(draw, box, normalized_border)
 
     if positioned_images and not legacy_flow:
+        positioned_inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
+        positioned_inner_height = max(1, box_height - (MANUAL_BOX_PADDING_Y * 2))
         for item in positioned_images:
             item_path = item["path"]
             assert isinstance(item_path, Path)
             item_width = _clamp_int(
                 int(item.get("width", inner_width)),
                 1,
-                label_width,
+                positioned_inner_width * 2,
             )
             item_height = _clamp_int(
                 int(item.get("height", image_slot_height)),
                 1,
-                box_height,
+                positioned_inner_height * 2,
             )
-            item_x = _clamp_int(int(item.get("x", 0)), -label_width, label_width)
-            item_y = _clamp_int(int(item.get("y", 0)), -box_height, box_height)
+            item_x = _clamp_int(
+                int(item.get("x", 0)),
+                min(0, -item_width + 24),
+                max(0, positioned_inner_width - 24),
+            )
+            item_y = _clamp_int(
+                int(item.get("y", 0)),
+                min(0, -item_height + 24),
+                max(0, positioned_inner_height - 24),
+            )
             item_rotation = _clamp_int(int(item.get("rotation_degrees", 0)), -180, 180)
             item_crop = bool(item.get("crop", False))
             prepared = _prepare_manual_asset(
@@ -285,6 +295,7 @@ def compose_manual_print(
                 scale_percent=100,
                 crop=item_crop,
                 rotation_degrees=item_rotation,
+                preserve_canvas=True,
             )
             _paste_clipped(
                 canvas,
@@ -307,18 +318,15 @@ def compose_manual_print(
             continue
 
         assert isinstance(value, str)
-        text_image = Image.new("L", (inner_width, max(1, text_height)), color=255)
-        text_draw = ImageDraw.Draw(text_image)
         _draw_aligned_multiline_text(
-            text_draw,
+            draw,
             value,
             body_font,
-            0,
-            0,
+            box[0] + MANUAL_BOX_PADDING_X,
+            cursor_y,
             inner_width,
             normalized_align,
         )
-        _paste_clipped(canvas, text_image, box[0] + MANUAL_BOX_PADDING_X, cursor_y, box)
         cursor_y += text_height
 
     return canvas
@@ -423,6 +431,7 @@ def _prepare_manual_asset(
     scale_percent: int,
     crop: bool,
     rotation_degrees: int,
+    preserve_canvas: bool = False,
 ) -> Image.Image:
     with Image.open(asset_path) as image:
         grayscale = image.convert("L")
@@ -444,6 +453,8 @@ def _prepare_manual_asset(
         )
         resized = grayscale.resize(target_size, Image.Resampling.LANCZOS)
         if crop:
+            return _center_on_canvas(resized, max_width, max_height)
+        if preserve_canvas:
             return _center_on_canvas(resized, max_width, max_height)
         if resized.width <= max_width and resized.height <= max_height:
             return resized

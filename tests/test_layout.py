@@ -167,6 +167,92 @@ class LayoutTest(unittest.TestCase):
         self.assertLess(image.getpixel((129, 40)), 245)
         self.assertLess(image.getpixel((209, 70)), 245)
 
+    def test_compose_manual_print_preserves_oversized_positioned_image_crop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset_path = Path(tmp) / "wide.png"
+            source = Image.new("L", (624, 100), color=255)
+            for x in range(312, 624):
+                for y in range(100):
+                    source.putpixel((x, y), 0)
+            source.save(asset_path)
+
+            image = compose_manual_print(
+                text="",
+                image_path=None,
+                image_items=[
+                    {
+                        "path": asset_path,
+                        "x": -312,
+                        "y": 20,
+                        "width": 624,
+                        "height": 100,
+                    },
+                ],
+                printed_at=datetime(2026, 6, 12, 12, 0, 0),
+                config=_layout_config(),
+                border_style="thin",
+                label_width_px=344,
+                label_height_px=180,
+            )
+
+        self.assertEqual(image.width, 384)
+        self.assertEqual(image.height, 220)
+        self.assertLess(image.getpixel((192, 106)), 245)
+
+    def test_compose_manual_print_matches_contain_preview_for_positioned_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset_path = Path(tmp) / "tall.png"
+            Image.new("L", (300, 600), color=0).save(asset_path)
+
+            image = compose_manual_print(
+                text="",
+                image_path=None,
+                image_items=[
+                    {
+                        "path": asset_path,
+                        "x": -225,
+                        "y": 0,
+                        "width": 600,
+                        "height": 300,
+                    },
+                ],
+                printed_at=datetime(2026, 6, 12, 12, 0, 0),
+                config=_layout_config(),
+                border_style="thin",
+                label_width_px=344,
+                label_height_px=180,
+            )
+
+        self.assertEqual(image.width, 384)
+        self.assertEqual(image.height, 220)
+        self.assertLess(image.getpixel((111, 90)), 245)
+
+    def test_compose_manual_print_text_overlay_does_not_blank_positioned_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset_path = Path(tmp) / "black.png"
+            Image.new("L", (312, 148), color=0).save(asset_path)
+
+            image = compose_manual_print(
+                text="A",
+                image_path=None,
+                image_items=[
+                    {
+                        "path": asset_path,
+                        "x": 0,
+                        "y": 0,
+                        "width": 312,
+                        "height": 148,
+                    },
+                ],
+                printed_at=datetime(2026, 6, 12, 12, 0, 0),
+                config=_layout_config(),
+                border_style="thin",
+                label_width_px=344,
+                label_height_px=180,
+            )
+
+        self.assertLess(image.getpixel((42, 110)), 245)
+
     def test_compose_ticket_centers_title_and_tag_below_image_with_text_box(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             asset_path = Path(tmp) / "asset.png"

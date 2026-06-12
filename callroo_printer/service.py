@@ -7,7 +7,7 @@ import random
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from callroo_printer.audio import LoopingWavePlayer, OneShotWavePlayer
@@ -83,6 +83,7 @@ class FortunePrinterService:
         input_monitor: TriggerSourceMonitor | None = None
         dashboard_monitor: DashboardTriggerMonitor | None = None
         keepalive_thread: threading.Thread | None = None
+        web_prefetch_thread: threading.Thread | None = None
         try:
             self._prime_event_audio()
             self._prime_launch_sounds()
@@ -119,6 +120,7 @@ class FortunePrinterService:
                 LOGGER.warning("Configured trigger inputs are unavailable: %s", exc)
             LOGGER.info("Active trigger inputs: %s", ", ".join(active_inputs))
             LOGGER.info(self._trigger_instructions(active_inputs))
+            web_prefetch_thread = self._start_web_search_prefetch_thread()
 
             while True:
                 trigger = input_monitor.next_trigger(timeout_seconds=0.25)
@@ -147,6 +149,8 @@ class FortunePrinterService:
                     player.close()
             if keepalive_thread is not None:
                 keepalive_thread.join(timeout=2.0)
+            if web_prefetch_thread is not None:
+                web_prefetch_thread.join(timeout=2.0)
             self.printer.close()
 
     def _wait_for_printer_ready(self) -> None:
@@ -580,6 +584,72 @@ class FortunePrinterService:
             return fallback, selected_tag, True
         job.write_text("fortune.txt", result.text + "\n")
         return result.text, selected_tag, False
+
+    def _start_web_search_prefetch_thread(self) -> threading.Thread | None:
+        schedules = _web_search_prefetch_schedules(self.config)
+        if not schedules:
+            return None
+        thread = threading.Thread(
+            target=self._web_search_prefetch_loop,
+            args=(schedules,),
+            name="web-search-prefetch",
+            daemon=True,
+        )
+        thread.start()
+        LOGGER.info(
+            "Web search daily prefetch enabled for %s.",
+            ", ".join(f"{name}@{time_text}" for name, time_text in schedules),
+        )
+        return thread
+
+    def _web_search_prefetch_loop(
+        self,
+        schedules: tuple[tuple[str, str], ...],
+    ) -> None:
+        completed_dates: set[tuple[str, str]] = set()
+        while not self._stop_event.is_set():
+            now = datetime.now().astimezone()
+            date_key = now.date().isoformat()
+            for profile_name, time_text in schedules:
+                if (profile_name, date_key) in completed_dates:
+                    continue
+                scheduled_at = _scheduled_datetime(now, time_text)
+                if now >= scheduled_at:
+                    self._prefetch_profile_web_search(profile_name, date_key=date_key)
+                    completed_dates.add((profile_name, date_key))
+
+            tomorrow_key = (now + timedelta(days=1)).date().isoformat()
+            completed_dates = {
+                item
+                for item in completed_dates
+                if item[1] in {date_key, tomorrow_key}
+            }
+            if self._stop_event.wait(60.0):
+                return
+
+    def _prefetch_profile_web_search(self, profile_name: str, *, date_key: str) -> None:
+        client = self.clients.get(profile_name)
+        if client is None:
+            return
+        LOGGER.info(
+            "Prefetching web search snippets for profile %s on %s.",
+            profile_name,
+            date_key,
+        )
+        try:
+            result = client.prefetch_web_search(date_key=date_key)
+        except Exception as exc:
+            LOGGER.warning(
+                "Web search prefetch failed for profile %s: %s",
+                profile_name,
+                exc,
+            )
+            return
+        LOGGER.info(
+            "Web search prefetch complete for profile %s: %s item(s).",
+            profile_name,
+            result.get("count", 0),
+        )
 
     def _keepalive_loop(self) -> None:
         interval = self.config.bluetooth.keepalive_interval_seconds
@@ -1111,6 +1181,51 @@ def _load_json_object(path: Path) -> dict[str, object]:
 
 def _format_llm_time_hint(triggered_at: datetime, format_string: str) -> str:
     return triggered_at.strftime(format_string)
+
+
+def _web_search_prefetch_schedules(
+    config: AppConfig,
+) -> tuple[tuple[str, str], ...]:
+    schedules: list[tuple[str, str]] = []
+    for profile in config.llm.profiles:
+        web_cfg = getattr(profile, "web_search", None)
+        if (
+            web_cfg is None
+            or not web_cfg.enabled
+            or not web_cfg.daily_prefetch_enabled
+            or not web_cfg.signs
+        ):
+            continue
+        try:
+            _parse_daily_time(web_cfg.daily_prefetch_time)
+        except ValueError as exc:
+            LOGGER.warning(
+                "Skipping web search prefetch for profile %s: %s",
+                profile.name,
+                exc,
+            )
+            continue
+        schedules.append((profile.name, web_cfg.daily_prefetch_time))
+    return tuple(schedules)
+
+
+def _scheduled_datetime(now: datetime, time_text: str) -> datetime:
+    hour, minute = _parse_daily_time(time_text)
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _parse_daily_time(time_text: str) -> tuple[int, int]:
+    pieces = time_text.strip().split(":", 1)
+    if len(pieces) != 2:
+        raise ValueError(f"invalid daily prefetch time {time_text!r}")
+    try:
+        hour = int(pieces[0])
+        minute = int(pieces[1])
+    except ValueError as exc:
+        raise ValueError(f"invalid daily prefetch time {time_text!r}") from exc
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(f"invalid daily prefetch time {time_text!r}")
+    return hour, minute
 
 
 def _build_event_player(

@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections import Counter, deque
+from collections import Counter
 from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default as EMAIL_POLICY
@@ -1403,7 +1403,7 @@ _DASHBOARD_HTML = """<!doctype html>
 
       grid.innerHTML = previews.map((preview, index) => {
         const image = preview.image_url
-          ? `<a href="${escapeHtml(preview.image_url)}" target="_blank" rel="noreferrer"><img src="${escapeHtml(preview.image_url)}" alt="${escapeHtml(preview.job_id)}"></a>`
+          ? `<a href="${escapeHtml(preview.image_url)}" target="_blank" rel="noreferrer"><img src="${escapeHtml(preview.image_url)}" alt="${escapeHtml(preview.job_id)}" loading="lazy" decoding="async"></a>`
           : `<div class="preview-fallback">미리보기 이미지가 없습니다.</div>`;
 
         const badges = [
@@ -3634,10 +3634,13 @@ class DashboardSnapshotBuilder:
         self.log_lines = log_lines
         self.snapshot_cache_seconds = max(0.0, float(snapshot_cache_seconds))
         self.jobs_dir = config.output.outputs_dir / "jobs"
+        self.jobs_root = self.jobs_dir.resolve()
+        self.assets_root = config.assets_dir.resolve()
         self.bluetooth_status_path = config.output.outputs_dir / "bluetooth-status.json"
         self.log_path = config.output.logs_dir / config.output.log_filename
         self._local_timezone = datetime.now().astimezone().tzinfo or timezone.utc
         self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._artifacts_cache: tuple[float, dict[str, list[dict[str, Any]]]] | None = None
 
     def build_snapshot(self, *, selected_date: str | None = None) -> dict[str, Any]:
         normalized_date = _normalize_date(selected_date)
@@ -3655,33 +3658,53 @@ class DashboardSnapshotBuilder:
 
     def clear_cache(self) -> None:
         self._snapshot_cache.clear()
+        self._artifacts_cache = None
 
     def _build_snapshot_uncached(self, *, normalized_date: str | None) -> dict[str, Any]:
-        jobs = self._load_jobs()
-        filtered_jobs = [
-            job for job in jobs if normalized_date is None or job["triggered_date"] == normalized_date
+        job_entries = self._load_job_index()
+        filtered_entries = [
+            job
+            for job in job_entries
+            if normalized_date is None or job["triggered_date"] == normalized_date
         ]
         logs = self._read_log_snapshot()
-        latest_job = jobs[0] if jobs else None
         today = datetime.now(self._local_timezone).date().isoformat()
         available_dates = [
             {"date": date, "count": count}
             for date, count in sorted(
-                Counter(job["triggered_date"] for job in jobs).items(),
+                Counter(job["triggered_date"] for job in job_entries).items(),
                 reverse=True,
             )
         ]
+        previews = self._load_preview_summaries(filtered_entries[: self.preview_limit])
+        latest_job = None
+        if job_entries:
+            latest_job = next(
+                (
+                    preview
+                    for preview in previews
+                    if preview["job_id"] == job_entries[0]["job_id"]
+                ),
+                None,
+            )
+            if latest_job is None:
+                latest_job = self._load_job_summary(
+                    job_entries[0]["job_dir"],
+                    index_entry=job_entries[0],
+                )
 
         return {
             "generated_at": datetime.now(self._local_timezone).isoformat(),
             "selected_date": normalized_date or "",
             "today_date": today,
-            "today_jobs": sum(1 for job in jobs if job["triggered_date"] == today),
-            "total_jobs": len(jobs),
-            "filtered_jobs": len(filtered_jobs),
-            "previews_truncated": len(filtered_jobs) > self.preview_limit,
+            "today_jobs": sum(1 for job in job_entries if job["triggered_date"] == today),
+            "total_jobs": len(job_entries),
+            "filtered_jobs": len(filtered_entries),
+            "previews_truncated": len(filtered_entries) > self.preview_limit,
             "available_dates": available_dates,
-            "status_counts": dict(Counter(job["status"] for job in jobs if job["status"])),
+            "status_counts": dict(
+                Counter(job["status"] for job in job_entries if job["status"])
+            ),
             "latest_job": latest_job,
             "runtime": self._build_runtime_summary(),
             "bluetooth": self._read_bluetooth_status(),
@@ -3691,8 +3714,8 @@ class DashboardSnapshotBuilder:
             },
             "logs": logs,
             "llm_profiles": self._serialize_llm_profiles(),
-            "artifacts": self._serialize_artifacts(),
-            "previews": filtered_jobs[: self.preview_limit],
+            "artifacts": self._serialize_artifacts_cached(),
+            "previews": previews,
         }
 
     def resolve_preview_image(self, job_id: str) -> Path | None:
@@ -3700,7 +3723,7 @@ class DashboardSnapshotBuilder:
         if not safe_job_id:
             return None
         job_dir = (self.jobs_dir / safe_job_id).resolve()
-        if not _is_relative_to(job_dir, self.jobs_dir.resolve()) or not job_dir.is_dir():
+        if not _is_relative_to_path(job_dir, self.jobs_root) or not job_dir.is_dir():
             return None
 
         composed = job_dir / "composed-ticket.png"
@@ -3718,8 +3741,8 @@ class DashboardSnapshotBuilder:
             else:
                 candidate = candidate.resolve()
             if candidate.is_file() and (
-                _is_relative_to(candidate, self.config.assets_dir.resolve())
-                or _is_relative_to(candidate, job_dir)
+                _is_relative_to_path(candidate, self.assets_root)
+                or _is_relative_to_path(candidate, job_dir)
             ):
                 return candidate
         return None
@@ -3732,8 +3755,7 @@ class DashboardSnapshotBuilder:
         if relative_path.is_absolute() or ".." in relative_path.parts:
             return None
         candidate = (self.config.assets_dir / relative_path).resolve()
-        assets_root = self.config.assets_dir.resolve()
-        if not _is_relative_to(candidate, assets_root) or not candidate.is_file():
+        if not _is_relative_to_path(candidate, self.assets_root) or not candidate.is_file():
             return None
         if candidate.suffix.lower() not in IMAGE_EXTENSIONS | AUDIO_EXTENSIONS:
             return None
@@ -3806,6 +3828,19 @@ class DashboardSnapshotBuilder:
             if len(entries) >= limit:
                 break
         return entries
+
+    def _serialize_artifacts_cached(self) -> dict[str, list[dict[str, Any]]]:
+        if self.snapshot_cache_seconds <= 0:
+            return self._serialize_artifacts()
+        now_monotonic = time.monotonic()
+        if (
+            self._artifacts_cache is not None
+            and now_monotonic - self._artifacts_cache[0] <= self.snapshot_cache_seconds
+        ):
+            return self._artifacts_cache[1]
+        artifacts = self._serialize_artifacts()
+        self._artifacts_cache = (now_monotonic, artifacts)
+        return artifacts
 
     def _serialize_artifacts(self) -> dict[str, list[dict[str, Any]]]:
         image_paths: dict[str, Path] = {}
@@ -3880,7 +3915,7 @@ class DashboardSnapshotBuilder:
         labels: set[str],
         kind: str,
     ) -> dict[str, Any]:
-        resolved = path.expanduser().resolve()
+        resolved = _absolute_path(path, base_dir=self.config.assets_dir)
         exists = resolved.is_file()
         relative_path = self._asset_relative_path(resolved)
         url = f"/asset/{quote(relative_path, safe='/')}" if exists and relative_path else ""
@@ -3897,62 +3932,122 @@ class DashboardSnapshotBuilder:
         }
 
     def _asset_key(self, path: Path) -> str:
-        resolved = path.expanduser().resolve()
+        resolved = _absolute_path(path, base_dir=self.config.assets_dir)
         return self._asset_relative_path(resolved) or str(resolved)
 
     def _asset_relative_path(self, path: Path) -> str | None:
-        assets_root = self.config.assets_dir.resolve()
-        if not _is_relative_to(path, assets_root):
+        if not _is_relative_to_path(path, self.assets_root):
             return None
-        return path.relative_to(assets_root).as_posix()
+        return path.relative_to(self.assets_root).as_posix()
 
-    def _load_jobs(self) -> list[dict[str, Any]]:
+    def _load_job_index(self) -> list[dict[str, Any]]:
         if not self.jobs_dir.is_dir():
             return []
 
-        jobs: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
         for job_dir in sorted(
             (path for path in self.jobs_dir.iterdir() if path.is_dir()),
             reverse=True,
         ):
-            summary = self._load_job_summary(job_dir)
-            if summary is not None:
-                jobs.append(summary)
-        return jobs
+            entry = self._load_job_index_entry(job_dir)
+            if entry is not None:
+                entries.append(entry)
+        return entries
 
-    def _load_job_summary(self, job_dir: Path) -> dict[str, Any] | None:
+    def _load_job_index_entry(self, job_dir: Path) -> dict[str, Any] | None:
         result_payload = _read_json_file(job_dir / "result.json")
-        input_payload = _read_json_file(job_dir / "input.json")
-        asset_payload = _read_json_file(job_dir / "selected-asset.json")
-        llm_payload = _read_json_file(job_dir / "selected-llm-profile.json")
-        llm_tag_payload = _read_json_file(job_dir / "llm-tag.json")
-
         triggered_at = (
             _parse_datetime(result_payload.get("triggered_at"), self._local_timezone)
+            or _parse_datetime_from_job_id(job_dir.name, self._local_timezone)
+        )
+        if triggered_at is None:
+            input_payload = _read_json_file(job_dir / "input.json")
+            triggered_at = _parse_datetime(
+                input_payload.get("triggered_at"),
+                self._local_timezone,
+            )
+        if triggered_at is None:
+            return None
+        return {
+            "job_id": job_dir.name,
+            "job_dir": job_dir,
+            "triggered_at": triggered_at,
+            "triggered_date": triggered_at.date().isoformat(),
+            "status": _first_text(result_payload.get("status")) or "unknown",
+            "result_payload": result_payload,
+        }
+
+    def _load_preview_summaries(
+        self,
+        entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for entry in entries:
+            summary = self._load_job_summary(
+                entry["job_dir"],
+                index_entry=entry,
+            )
+            if summary is not None:
+                summaries.append(summary)
+        return summaries
+
+    def _load_jobs(self) -> list[dict[str, Any]]:
+        return self._load_preview_summaries(self._load_job_index())
+
+    def _load_job_summary(
+        self,
+        job_dir: Path,
+        *,
+        index_entry: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        indexed_result_payload = (index_entry or {}).get("result_payload")
+        result_payload = (
+            indexed_result_payload
+            if isinstance(indexed_result_payload, dict)
+            else _read_json_file(job_dir / "result.json")
+        )
+        input_payload = _read_json_file(job_dir / "input.json")
+
+        indexed_triggered_at = (index_entry or {}).get("triggered_at")
+        triggered_at = (
+            indexed_triggered_at
+            if isinstance(indexed_triggered_at, datetime)
+            else None
+        )
+        triggered_at = (
+            triggered_at
+            or _parse_datetime(result_payload.get("triggered_at"), self._local_timezone)
             or _parse_datetime(input_payload.get("triggered_at"), self._local_timezone)
             or _parse_datetime_from_job_id(job_dir.name, self._local_timezone)
         )
         if triggered_at is None:
             return None
 
-        selected_tag = (
-            _first_text(
-                result_payload.get("selected_tag"),
+        asset_payload: dict[str, Any] | None = None
+        selected_tag = _first_text(result_payload.get("selected_tag"))
+        if selected_tag is None:
+            llm_tag_payload = _read_json_file(job_dir / "llm-tag.json")
+            asset_payload = _read_json_file(job_dir / "selected-asset.json")
+            selected_tag = _first_text(
                 _read_text_file(job_dir / "tag.txt"),
                 llm_tag_payload.get("tag"),
                 asset_payload.get("selected_tag"),
             )
-            or ""
-        )
-        llm_profile_name = _first_text(
-            result_payload.get("llm_profile_name"),
-            llm_payload.get("profile_name"),
-        )
-        asset_path = _first_text(
-            asset_payload.get("asset_path"),
-            result_payload.get("asset_path"),
-        )
-        image_path = self.resolve_preview_image(job_dir.name)
+        selected_tag = selected_tag or ""
+
+        llm_profile_name = _first_text(result_payload.get("llm_profile_name"))
+        if llm_profile_name is None:
+            llm_payload = _read_json_file(job_dir / "selected-llm-profile.json")
+            llm_profile_name = _first_text(llm_payload.get("profile_name"))
+
+        asset_path = _first_text(result_payload.get("asset_path"))
+        if asset_path is None:
+            if asset_payload is None:
+                asset_payload = _read_json_file(job_dir / "selected-asset.json")
+            asset_path = _first_text(asset_payload.get("asset_path"))
+        has_preview_image = (job_dir / "composed-ticket.png").is_file()
+        if not has_preview_image:
+            has_preview_image = self.resolve_preview_image(job_dir.name) is not None
         error_message = _first_text(result_payload.get("error"))
 
         return {
@@ -3960,7 +4055,9 @@ class DashboardSnapshotBuilder:
             "triggered_at": triggered_at.isoformat(),
             "triggered_date": triggered_at.date().isoformat(),
             "triggered_time": triggered_at.strftime("%H:%M:%S"),
-            "status": _first_text(result_payload.get("status")) or "unknown",
+            "status": (index_entry or {}).get("status")
+            or _first_text(result_payload.get("status"))
+            or "unknown",
             "fortune": _read_text_file(job_dir / "fortune.txt"),
             "llm_profile_name": llm_profile_name or "",
             "selected_tag": selected_tag,
@@ -3970,7 +4067,7 @@ class DashboardSnapshotBuilder:
             "manual_print": bool(result_payload.get("manual_print", False)),
             "dry_run": bool(result_payload.get("dry_run", False)),
             "error": error_message or "",
-            "image_url": f"/preview/{quote(job_dir.name, safe='')}" if image_path else "",
+            "image_url": f"/preview/{quote(job_dir.name, safe='')}" if has_preview_image else "",
         }
 
     def _build_runtime_summary(self) -> dict[str, Any]:
@@ -4135,13 +4232,10 @@ class DashboardSnapshotBuilder:
                 "last_message": "",
             }
 
-        tail_lines: deque[str] = deque(maxlen=self.log_lines)
-        with self.log_path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                tail_lines.append(line.rstrip("\n"))
-
+        stat = self.log_path.stat()
+        tail_lines = _tail_text_lines(self.log_path, max_lines=self.log_lines)
         updated_at = datetime.fromtimestamp(
-            self.log_path.stat().st_mtime,
+            stat.st_mtime,
             tz=self._local_timezone,
         )
         last_line = tail_lines[-1] if tail_lines else ""
@@ -5884,6 +5978,32 @@ def _read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
+def _tail_text_lines(
+    path: Path,
+    *,
+    max_lines: int,
+    block_size: int = 8192,
+) -> list[str]:
+    if max_lines <= 0:
+        return []
+
+    chunks: list[bytes] = []
+    newline_count = 0
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= max_lines:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+
+    text = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    return text.splitlines()[-max_lines:]
+
+
 def _read_json_file(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -5949,6 +6069,21 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_relative_to_path(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _absolute_path(path: Path, *, base_dir: Path) -> Path:
+    expanded = path.expanduser()
+    if expanded.is_absolute():
+        return expanded
+    return base_dir / expanded
 
 
 def _extract_config_path_from_execstart(exec_start: str) -> Path | None:

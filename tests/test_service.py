@@ -12,7 +12,12 @@ from PIL import Image
 
 from callroo_printer.artifacts import ArtifactManager
 from callroo_printer.config import LayoutConfig
-from callroo_printer.service import DashboardTriggerMonitor, FortunePrinterService
+from callroo_printer.service import (
+    DashboardTriggerMonitor,
+    FortunePrinterService,
+    _scheduled_datetime,
+    _web_search_prefetch_schedules,
+)
 
 
 class ServiceBluetoothResetTest(unittest.TestCase):
@@ -400,6 +405,63 @@ class ServiceBluetoothResetTest(unittest.TestCase):
             self.assertEqual(len(manual_payload["images"]), 2)
             self.assertEqual(manual_payload["images"][0]["x"], 8)
             self.assertTrue(manual_payload["images"][0]["crop"])
+
+    def test_web_search_prefetch_schedules_include_enabled_profiles(self) -> None:
+        config = SimpleNamespace(
+            llm=SimpleNamespace(
+                profiles=(
+                    SimpleNamespace(
+                        name="star",
+                        web_search=SimpleNamespace(
+                            enabled=True,
+                            daily_prefetch_enabled=True,
+                            daily_prefetch_time="09:00",
+                            signs=("양", "황소"),
+                        ),
+                    ),
+                    SimpleNamespace(
+                        name="plain",
+                        web_search=None,
+                    ),
+                    SimpleNamespace(
+                        name="disabled",
+                        web_search=SimpleNamespace(
+                            enabled=True,
+                            daily_prefetch_enabled=False,
+                            daily_prefetch_time="09:00",
+                            signs=("쥐",),
+                        ),
+                    ),
+                )
+            )
+        )
+
+        self.assertEqual(
+            _web_search_prefetch_schedules(config),
+            (("star", "09:00"),),
+        )
+
+    def test_prefetch_profile_web_search_calls_client(self) -> None:
+        service = _build_service(reset_after_failures=3, reset_cooldown_seconds=30.0)
+        client = SimpleNamespace(calls=[])
+
+        def prefetch(*, date_key: str):
+            client.calls.append(date_key)
+            return {"count": 12}
+
+        client.prefetch_web_search = prefetch
+        service.clients = {"star": client}
+
+        service._prefetch_profile_web_search("star", date_key="2026-06-11")
+
+        self.assertEqual(client.calls, ["2026-06-11"])
+
+    def test_scheduled_datetime_uses_local_day_time(self) -> None:
+        from datetime import datetime
+
+        scheduled = _scheduled_datetime(datetime(2026, 6, 11, 13, 30), "09:00")
+
+        self.assertEqual(scheduled, datetime(2026, 6, 11, 9, 0))
 
 
 class _FakePrinter:

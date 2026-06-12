@@ -238,6 +238,126 @@ class LLMClientTest(unittest.TestCase):
         self.assertIn("Invalid LLM response JSON", result.attempts[0]["error"])
         self.assertEqual(urlopen.call_count, 2)
 
+    def test_generate_fortune_executes_web_search_tool_call(self) -> None:
+        web_search = SimpleNamespace(
+            enabled=True,
+            provider="brave",
+            endpoint="https://api.search.brave.com/res/v1/web/search",
+            api_key_env="BRAVE_API_KEY",
+            query_template="오늘 {sign}자리 운세",
+            signs=(),
+            count=2,
+            search_lang="ko",
+            country="KR",
+            cache_ttl_seconds=60.0,
+            timeout_seconds=1.0,
+            context_pre="",
+            context_post="",
+            sign_directive="",
+            tool_calling_enabled=True,
+            tool_name="web_search",
+            tool_description="Search the web.",
+            tool_max_rounds=1,
+        )
+        client = OpenAICompatClient(
+            SimpleNamespace(
+                prompt="운세를 JSON으로 써줘. 최신 정보가 필요하면 web_search를 써.",
+                system_prompt="JSON 객체 하나만 반환한다.",
+                response_tag_key="tag",
+                response_json_key="fortune",
+                current_time_hint_pre="시각:",
+                current_time_hint_post="시각 반영.",
+                cleaned_examples_pre="최근:",
+                cleaned_examples_post="새 조합.",
+                web_search=web_search,
+                models=(
+                    SimpleNamespace(
+                        name="tool-model",
+                        endpoint="https://llm.invalid/v1/",
+                        model="tool-model",
+                        enable_thinking=False,
+                        api_key="llm-key",
+                        api_key_env=None,
+                        temperature=0.7,
+                        max_tokens=80,
+                        timeout_seconds=1.0,
+                    ),
+                ),
+            )
+        )
+        tool_call_response = _FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_search",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": json.dumps(
+                                            {"query": "오늘 서울 날씨", "count": 1},
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+        search_response = _FakeHTTPResponse(
+            {
+                "web": {
+                    "results": [
+                        {
+                            "title": "서울 날씨",
+                            "url": "https://weather.example/seoul",
+                            "description": "맑고 선선함",
+                        }
+                    ]
+                }
+            }
+        )
+        final_response = _FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"fortune": "대길: 햇살\n창가가 가볍다\n물 한 잔", "tag": "행운"},
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+        with patch.dict("os.environ", {"BRAVE_API_KEY": "brave-key"}):
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=(tool_call_response, search_response, final_response),
+            ) as urlopen:
+                result = client.generate_fortune(max_chars=100, allowed_tags=("행운",))
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.text, "대길: 햇살\n창가가 가볍다\n물 한 잔")
+        self.assertEqual(result.tag, "행운")
+        self.assertEqual(urlopen.call_count, 3)
+        first_payload = json.loads(urlopen.call_args_list[0].args[0].data.decode("utf-8"))
+        final_payload = json.loads(urlopen.call_args_list[2].args[0].data.decode("utf-8"))
+        self.assertIn("tools", first_payload)
+        self.assertEqual(
+            [message["role"] for message in final_payload["messages"]],
+            ["system", "user", "assistant", "tool"],
+        )
+        self.assertIn("서울 날씨", final_payload["messages"][3]["content"])
+        self.assertIn("q=%EC%98%A4%EB%8A%98+%EC%84%9C%EC%9A%B8+%EB%82%A0%EC%94%A8", urlopen.call_args_list[1].args[0].full_url)
+
 
 class _FakeRawHTTPResponse:
     def __init__(self, payload: bytes) -> None:

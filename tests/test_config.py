@@ -71,6 +71,27 @@ class ConfigTest(unittest.TestCase):
                                 "cleaned_examples_pre": "피해야 할 예시:",
                                 "cleaned_examples_post": "위 표현을 반복하지 마.",
                                 "response_tag_key": "selected_tag",
+                                "web_search": {
+                                    "enabled": True,
+                                    "provider": "brave",
+                                    "endpoint": "https://api.search.brave.com/res/v1/web/search",
+                                    "api_key": "search-config-key",
+                                    "api_key_env": "BRAVE_API_KEY",
+                                    "query_template": "오늘 {sign}자리 운세",
+                                    "signs": ["양", "황소"],
+                                    "count": 4,
+                                    "search_lang": "en",
+                                    "country": "US",
+                                    "search_depth": "fast",
+                                    "include_answer": True,
+                                    "include_raw_content": True,
+                                    "tool_calling_enabled": True,
+                                    "tool_name": "brave_search",
+                                    "tool_description": "Search current web results.",
+                                    "tool_max_rounds": 3,
+                                    "daily_prefetch_enabled": True,
+                                    "daily_prefetch_time": "09:00",
+                                },
                                 "tags": {
                                     "기계음": ["machine-2.png"],
                                     "형광등": ["hallway-1.png"]
@@ -143,6 +164,22 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(profile.cleaned_examples_post, "위 표현을 반복하지 마.")
             self.assertEqual(profile.response_tag_key, "selected_tag")
             self.assertEqual(profile.variation_hints, ("형광등 아래", "한 박자 늦게"))
+            self.assertIsNotNone(profile.web_search)
+            assert profile.web_search is not None
+            self.assertTrue(profile.web_search.enabled)
+            self.assertEqual(profile.web_search.provider, "brave")
+            self.assertEqual(profile.web_search.api_key, "search-config-key")
+            self.assertEqual(profile.web_search.count, 4)
+            self.assertEqual(profile.web_search.search_lang, "en")
+            self.assertEqual(profile.web_search.country, "US")
+            self.assertEqual(profile.web_search.search_depth, "fast")
+            self.assertTrue(profile.web_search.include_answer)
+            self.assertTrue(profile.web_search.include_raw_content)
+            self.assertTrue(profile.web_search.tool_calling_enabled)
+            self.assertEqual(profile.web_search.tool_name, "brave_search")
+            self.assertEqual(profile.web_search.tool_max_rounds, 3)
+            self.assertTrue(profile.web_search.daily_prefetch_enabled)
+            self.assertEqual(profile.web_search.daily_prefetch_time, "09:00")
             self.assertEqual(sorted(profile.tags.keys()), ["기계음", "형광등"])
             self.assertEqual(
                 profile.tags["기계음"],
@@ -202,6 +239,81 @@ class ConfigTest(unittest.TestCase):
             )
             self.assertEqual(config.audio.launch_sounds[0].weight, 1.0)
             self.assertEqual(config.audio.launch_sound_volume, 0.4)
+
+    def test_tavily_web_search_defaults_to_tavily_endpoint_and_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "assets").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "assets_dir": "assets",
+                        "llm": [
+                            {
+                                "name": "with-tavily",
+                                "web_search": {
+                                    "enabled": True,
+                                    "provider": "tavily",
+                                    "api_key": "tvly-config-key",
+                                    "tool_calling_enabled": True,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            web_search = config.llm.profiles[0].web_search
+            self.assertIsNotNone(web_search)
+            assert web_search is not None
+            self.assertEqual(web_search.provider, "tavily")
+            self.assertEqual(web_search.endpoint, "https://api.tavily.com/search")
+            self.assertEqual(web_search.api_key, "tvly-config-key")
+            self.assertEqual(web_search.api_key_env, "TAVILY_API_KEY")
+            self.assertEqual(web_search.search_depth, "basic")
+            self.assertFalse(web_search.include_answer)
+            self.assertFalse(web_search.include_raw_content)
+            self.assertFalse(web_search.daily_prefetch_enabled)
+            self.assertEqual(web_search.daily_prefetch_time, "09:00")
+
+    def test_daysaju_web_search_defaults_to_daysaju_endpoint_without_key_env(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "assets").mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "assets_dir": "assets",
+                        "llm": [
+                            {
+                                "name": "with-daysaju",
+                                "web_search": {
+                                    "enabled": True,
+                                    "provider": "daysaju",
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            web_search = config.llm.profiles[0].web_search
+            self.assertIsNotNone(web_search)
+            assert web_search is not None
+            self.assertEqual(web_search.provider, "daysaju")
+            self.assertEqual(web_search.endpoint, "https://daysaju.com/fortune/zodiac")
+            self.assertIsNone(web_search.api_key)
+            self.assertEqual(web_search.api_key_env, "")
 
     def test_llm_profile_model_candidates_load_with_profile_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

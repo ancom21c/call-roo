@@ -83,6 +83,29 @@
       "max_tokens": 160,
       "timeout_seconds": 25.0,
       "fallback_text": "망함: 프린터\n운세 서버가 삐끗함\n한 번 더 눌러봐",
+      "web_search": {
+        "enabled": false,
+        "provider": "brave",
+        "endpoint": "https://api.search.brave.com/res/v1/web/search",
+        "api_key": null,
+        "api_key_env": "BRAVE_API_KEY",
+        "count": 3,
+        "search_lang": "ko",
+        "country": "KR",
+        "search_depth": "basic",
+        "include_answer": false,
+        "include_raw_content": false,
+        "timeout_seconds": 8.0,
+        "cache_ttl_seconds": 21600.0,
+        "tool_calling_enabled": true,
+        "tool_name": "web_search",
+        "tool_max_rounds": 2,
+        "daily_prefetch_enabled": false,
+        "daily_prefetch_time": "09:00",
+        "tool_description": "Search the web for current facts, news, schedules, weather, or other recently changed information.",
+        "query_template": "오늘 {sign}자리 운세",
+        "signs": []
+      },
       "tags": {
         "여유": [
           "hallway-01.png"
@@ -233,6 +256,42 @@
       "max_tokens": 160,
       "timeout_seconds": 25.0,
       "fallback_text": "닭띠 분실운\n운세 서버가 잠깐 숨음\n금물: 재촉",
+      "web_search": {
+        "enabled": true,
+        "provider": "daysaju",
+        "endpoint": "https://daysaju.com/fortune/zodiac",
+        "api_key": null,
+        "api_key_env": "",
+        "count": 12,
+        "search_lang": "ko",
+        "country": "KR",
+        "timeout_seconds": 8.0,
+        "cache_ttl_seconds": 86400.0,
+        "tool_calling_enabled": true,
+        "tool_name": "web_search",
+        "tool_max_rounds": 2,
+        "daily_prefetch_enabled": true,
+        "daily_prefetch_time": "09:00",
+        "tool_description": "Fetch today's Korean zodiac fortune source data.",
+        "query_template": "오늘 {sign}띠 운세",
+        "signs": [
+          "쥐",
+          "소",
+          "호랑이",
+          "토끼",
+          "용",
+          "뱀",
+          "말",
+          "양",
+          "원숭이",
+          "닭",
+          "개",
+          "돼지"
+        ],
+        "context_pre": "오늘 파밍된 {sign}띠 운세 자료:",
+        "context_post": "위 자료의 운세 등급, 흐름, 주의점을 압축해서 반영하되 문장을 복사하지 마.",
+        "sign_directive": "이번 출력은 {sign}띠 기준으로 작성한다."
+      },
       "tags": {
         "여유": [
           "hallway-01.png"

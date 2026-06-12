@@ -48,15 +48,27 @@ class WebSearchConfig:
     enabled: bool
     provider: str
     endpoint: str
+    api_key: Optional[str]
     api_key_env: str
     query_template: str
     signs: tuple[str, ...]
     count: int
+    search_lang: str
+    country: str
+    search_depth: str
+    include_answer: bool
+    include_raw_content: bool
     cache_ttl_seconds: float
     timeout_seconds: float
     context_pre: str
     context_post: str
     sign_directive: str
+    tool_calling_enabled: bool
+    tool_name: str
+    tool_description: str
+    tool_max_rounds: int
+    daily_prefetch_enabled: bool
+    daily_prefetch_time: str
 
 
 @dataclass(frozen=True)
@@ -461,16 +473,39 @@ def _load_llm_profiles(
 def _load_web_search(raw: Any) -> Optional[WebSearchConfig]:
     if not isinstance(raw, dict):
         return None
+    provider = str(raw.get("provider", "brave")).strip().lower()
+    endpoint = raw.get("endpoint")
+    if endpoint in (None, ""):
+        endpoint = (
+            "https://api.tavily.com/search"
+            if provider == "tavily"
+            else "https://www.asahi.co.jp/data/ohaasa2020/horoscope.json"
+            if provider == "ohaasa"
+            else "https://daysaju.com/fortune/zodiac"
+            if provider == "daysaju"
+            else "https://api.search.brave.com/res/v1/web/search"
+        )
+    default_api_key_env = (
+        "TAVILY_API_KEY"
+        if provider == "tavily"
+        else "BRAVE_API_KEY"
+        if provider == "brave"
+        else ""
+    )
     return WebSearchConfig(
         enabled=bool(raw.get("enabled", False)),
-        provider=str(raw.get("provider", "brave")),
-        endpoint=str(
-            raw.get("endpoint", "https://api.search.brave.com/res/v1/web/search")
-        ),
-        api_key_env=str(raw.get("api_key_env", "BRAVE_API_KEY")),
+        provider=provider,
+        endpoint=str(endpoint),
+        api_key=_optional_str(raw.get("api_key")),
+        api_key_env=str(raw.get("api_key_env", default_api_key_env)),
         query_template=str(raw.get("query_template", "오늘 {sign}자리 운세")),
         signs=_string_tuple(raw.get("signs", [])),
         count=int(raw.get("count", 3)),
+        search_lang=str(raw.get("search_lang", "ko")),
+        country=str(raw.get("country", "KR")),
+        search_depth=str(raw.get("search_depth", "basic")),
+        include_answer=bool(raw.get("include_answer", False)),
+        include_raw_content=bool(raw.get("include_raw_content", False)),
         cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 21600.0)),
         timeout_seconds=float(raw.get("timeout_seconds", 8.0)),
         context_pre=str(raw.get("context_pre", "오늘 검색된 {sign}자리 실제 운세 자료:")),
@@ -483,6 +518,17 @@ def _load_web_search(raw: Any) -> Optional[WebSearchConfig]:
         sign_directive=str(
             raw.get("sign_directive", "이번 출력은 반드시 {sign}자리로 작성한다.")
         ),
+        tool_calling_enabled=bool(raw.get("tool_calling_enabled", False)),
+        tool_name=str(raw.get("tool_name", "web_search")),
+        tool_description=str(
+            raw.get(
+                "tool_description",
+                "Search the web for current facts, news, weather, schedules, or other information that may have changed recently.",
+            )
+        ),
+        tool_max_rounds=max(1, int(raw.get("tool_max_rounds", 2))),
+        daily_prefetch_enabled=bool(raw.get("daily_prefetch_enabled", False)),
+        daily_prefetch_time=str(raw.get("daily_prefetch_time", "09:00")),
     )
 
 

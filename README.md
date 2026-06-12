@@ -7,6 +7,7 @@
 ## 주요 기능
 
 - OpenAI 호환 Chat Completions endpoint 지원
+- Brave Search API와 Tavily 기반 LLM `web_search` tool calling 지원
 - 여러 LLM 프로필의 가중치 기반 랜덤 선택
 - 프로필별 모델 fallback 지원: 예를 들어 primary Gemma를 먼저 쓰고 실패하면 Qwen으로 자동 전환
 - 태그별 이미지 풀, 시작음/완료음/실패음, 반복 재생 오디오 지원
@@ -75,6 +76,92 @@ LLM 설정은 배열입니다. 각 항목이 하나의 프롬프트 프로필이
 ```
 
 `llm[].api_key`가 있으면 그 값을 우선 사용하고, 비어 있으면 `api_key_env` 환경 변수에서 읽습니다. `models`를 비워두면 프로필의 `endpoint`, `model`, `api_key*` 값을 단일 모델 설정으로 사용합니다.
+
+LLM이 최신 웹 정보를 직접 요청하게 하려면 프로필에 `web_search`를 추가합니다. `tool_calling_enabled`가 켜져 있으면 Chat Completions 요청에 `web_search` tool 스키마가 포함되고, 모델이 `tool_calls`를 반환할 때 검색 API 결과를 `role=tool` 메시지로 되돌린 뒤 최종 JSON 응답을 다시 요청합니다.
+
+Tavily를 쓰려면 `TAVILY_API_KEY`를 환경 변수로 두거나 `api_key`에 직접 넣을 수 있습니다. 직접값이 있으면 `api_key_env`보다 우선합니다. 비밀값을 저장소에 남기지 않으려면 환경 변수 방식을 권장합니다.
+
+```json
+{
+  "llm": [
+    {
+      "name": "fortune-haiku",
+      "web_search": {
+        "enabled": true,
+        "provider": "tavily",
+        "api_key": null,
+        "api_key_env": "TAVILY_API_KEY",
+        "count": 3,
+        "country": "KR",
+        "search_depth": "basic",
+        "include_answer": false,
+        "include_raw_content": false,
+        "tool_calling_enabled": true,
+        "tool_name": "web_search",
+        "tool_max_rounds": 2,
+        "daily_prefetch_enabled": true,
+        "daily_prefetch_time": "09:00"
+      }
+    }
+  ]
+}
+```
+
+Brave를 쓰려면 `BRAVE_API_KEY`를 환경 변수로 두거나 `api_key`에 직접 넣습니다.
+
+```json
+{
+  "llm": [
+    {
+      "name": "fortune-haiku",
+      "web_search": {
+        "enabled": true,
+        "provider": "brave",
+        "endpoint": "https://api.search.brave.com/res/v1/web/search",
+        "api_key": null,
+        "api_key_env": "BRAVE_API_KEY",
+        "count": 3,
+        "search_lang": "ko",
+        "country": "KR",
+        "tool_calling_enabled": true,
+        "tool_name": "web_search",
+        "tool_max_rounds": 2
+      }
+    }
+  ]
+}
+```
+
+띠별 운세처럼 한 페이지에서 12개 항목을 미리 가져오려면 `daysaju` provider를 쓸 수 있습니다. 이 provider는 API 키가 필요 없고, `signs` 전체를 매일 `daily_prefetch_time`에 캐시에 채워 둡니다.
+
+```json
+{
+  "llm": [
+    {
+      "name": "fortune-zodiac",
+      "web_search": {
+        "enabled": true,
+        "provider": "daysaju",
+        "endpoint": "https://daysaju.com/fortune/zodiac",
+        "api_key": null,
+        "api_key_env": "",
+        "count": 12,
+        "tool_calling_enabled": true,
+        "tool_name": "web_search",
+        "tool_max_rounds": 2,
+        "daily_prefetch_enabled": true,
+        "daily_prefetch_time": "09:00",
+        "query_template": "오늘 {sign}띠 운세",
+        "signs": ["쥐", "소", "호랑이", "토끼", "용", "뱀", "말", "양", "원숭이", "닭", "개", "돼지"]
+      }
+    }
+  ]
+}
+```
+
+별자리처럼 정해진 후보를 먼저 검색해 프롬프트에 붙이는 기존 방식도 같이 쓸 수 있습니다. 이 경우 `signs`에 후보를 넣고 `query_template`에 `{sign}`을 포함합니다.
+
+`daily_prefetch_enabled`를 켜면 프린터 서비스가 매일 `daily_prefetch_time`에 `signs` 전체를 미리 검색해 메모리 캐시에 채웁니다. 예를 들어 별자리 12개나 띠 12개를 오전 9시에 갱신해 두면 실제 출력 시점에는 그날 캐시된 자료를 사용합니다.
 
 ## 실행
 
@@ -303,6 +390,8 @@ sudo systemctl enable --now callroo-dashboard.service
 - `llm[].system_prompt`, `llm[].prompt`: 모델에 전달할 지시문
 - `llm[].models`: 순서대로 시도할 모델 후보
 - `llm[].tags`: 태그명에서 이미지 파일 목록으로 가는 맵
+- `llm[].web_search`: Brave/Tavily 검색 또는 Ohaasa/Daysaju 직접 파밍 설정. `enabled`와 `tool_calling_enabled`를 켜면 LLM `web_search` tool calling 사용
+- `llm[].web_search.daily_prefetch_enabled`: 지정 시각에 `signs` 전체 검색 결과를 미리 캐시
 - `layout.title_icon_file`: 타이틀 오른쪽에 붙일 아이콘 파일. 상대 경로면 `assets_dir` 기준
 - `layout.font_path`: 한글 폰트 경로
 - `layout.paper_width_px`, `layout.side_margin_px`: 출력 폭과 좌우 여백

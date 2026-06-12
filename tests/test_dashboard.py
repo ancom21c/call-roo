@@ -305,6 +305,68 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertIsNot(second, third)
             self.assertEqual(run.call_count, 2)
 
+    def test_snapshot_loads_only_visible_preview_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            _write_log(root / "logs" / "callroo-printer.log")
+            for index in range(5):
+                _create_job(
+                    config.output.outputs_dir
+                    / "jobs"
+                    / f"20260414-09000{index}-aa11bb2{index}",
+                    triggered_at=f"2026-04-14T09:00:0{index}+09:00",
+                    status="printed",
+                    fortune=f"{index}번째 운세",
+                    profile_name="default",
+                    tag="여유",
+                    asset_name="room.png",
+                )
+
+            builder = DashboardSnapshotBuilder(config, preview_limit=1)
+
+            with patch(
+                "callroo_printer.dashboard.subprocess.run",
+                return_value=_systemd_status("active", "running"),
+            ):
+                with patch.object(
+                    builder,
+                    "_load_job_summary",
+                    wraps=builder._load_job_summary,
+                ) as load_summary:
+                    snapshot = builder.build_snapshot()
+
+            self.assertEqual(snapshot["total_jobs"], 5)
+            self.assertEqual(snapshot["filtered_jobs"], 5)
+            self.assertEqual(len(snapshot["previews"]), 1)
+            self.assertEqual(load_summary.call_count, 1)
+
+    def test_log_snapshot_reads_tail_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+            log_path = root / "logs" / "callroo-printer.log"
+            log_path.write_text(
+                "\n".join(f"2026-04-14 09:00:{index:02d},000 INFO message {index}" for index in range(10))
+                + "\n",
+                encoding="utf-8",
+            )
+            builder = DashboardSnapshotBuilder(config, log_lines=3)
+
+            snapshot = builder._read_log_snapshot()
+
+            self.assertEqual(
+                snapshot["tail_text"],
+                "\n".join(
+                    [
+                        "2026-04-14 09:00:07,000 INFO message 7",
+                        "2026-04-14 09:00:08,000 INFO message 8",
+                        "2026-04-14 09:00:09,000 INFO message 9",
+                    ]
+                ),
+            )
+            self.assertEqual(snapshot["line_count"], 3)
+
     def test_service_status_uses_stale_log_without_systemd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

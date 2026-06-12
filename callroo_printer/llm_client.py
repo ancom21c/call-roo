@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from callroo_printer.config import LLMModelConfig, LLMProfileConfig
 from callroo_printer.web_search import WebSearchClient
@@ -32,9 +33,39 @@ class OpenAICompatClient:
     def __init__(self, config: LLMProfileConfig):
         self.config = config
         self._web_search: WebSearchClient | None = None
-        web_cfg = config.web_search
-        if web_cfg is not None and web_cfg.enabled and web_cfg.signs:
+        web_cfg = getattr(config, "web_search", None)
+        if web_cfg is not None and web_cfg.enabled and (
+            web_cfg.signs or web_cfg.tool_calling_enabled
+        ):
             self._web_search = WebSearchClient(web_cfg)
+
+    def prefetch_web_search(self, *, date_key: str | None = None) -> dict[str, object]:
+        web_cfg = getattr(self.config, "web_search", None)
+        if self._web_search is None or web_cfg is None or not web_cfg.signs:
+            return {"ok": False, "profile": self.config.name, "count": 0}
+        if date_key is None:
+            date_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+
+        fetched: list[dict[str, object]] = []
+        for sign in web_cfg.signs:
+            query, snippets = self._web_search.fetch_snippets(
+                sign=sign,
+                date_key=date_key,
+            )
+            fetched.append(
+                {
+                    "sign": sign,
+                    "query": query,
+                    "snippet_count": len(snippets),
+                }
+            )
+        return {
+            "ok": True,
+            "profile": self.config.name,
+            "date_key": date_key,
+            "count": len(fetched),
+            "items": fetched,
+        }
 
     def generate_fortune(
         self,
@@ -47,13 +78,16 @@ class OpenAICompatClient:
         web_sign: str | None = None
         web_snippets: tuple[str, ...] = ()
         if self._web_search is not None:
-            web_cfg = self.config.web_search
-            web_sign = random.choice(web_cfg.signs)
-            date_key = datetime.now().astimezone().strftime("%Y-%m-%d")
-            _query, web_snippets = self._web_search.fetch_snippets(
-                sign=web_sign, date_key=date_key
-            )
-        web_cfg = self.config.web_search if web_sign else None
+            web_cfg = getattr(self.config, "web_search", None)
+            if web_cfg is None or not web_cfg.signs:
+                web_cfg = None
+            else:
+                web_sign = random.choice(web_cfg.signs)
+                date_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+                _query, web_snippets = self._web_search.fetch_snippets(
+                    sign=web_sign, date_key=date_key
+                )
+        web_cfg = getattr(self.config, "web_search", None) if web_sign else None
         user_prompt = _compose_user_prompt(
             self.config.prompt,
             current_time_hint=current_time_hint,
@@ -109,72 +143,95 @@ class OpenAICompatClient:
         previous_attempts: tuple[dict[str, str], ...] = (),
     ) -> LLMCallResult:
         request_url = self._chat_completions_url(model_config)
-        payload: dict[str, object] = {
-            "model": model_config.model,
-            "temperature": model_config.temperature,
-            "max_tokens": model_config.max_tokens,
-            "messages": [
-                {"role": "system", "content": self.config.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "chat_template_kwargs": {
-                "enable_thinking": model_config.enable_thinking,
-            },
-        }
-
-        request = urllib.request.Request(
-            request_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers(model_config),
-            method="POST",
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.config.system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        tools = self._web_search_tools()
+        max_tool_rounds = self._web_search_tool_max_rounds() if tools else 0
+        tool_rounds = 0
+        payload = self._build_chat_payload(
+            model_config,
+            messages=messages,
+            tools=tools,
         )
+        body: dict[str, object] | None = None
 
-        try:
-            with urllib.request.urlopen(
-                request, timeout=model_config.timeout_seconds
-            ) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
-            return LLMCallResult(
-                request_url=request_url,
-                request_payload=payload,
-                response_payload=None,
-                raw_text=None,
-                parsed_json=None,
-                text="",
-                tag=None,
-                error=f"LLM request failed: {exc}",
-                model_name=model_config.name,
-                attempts=previous_attempts,
-            )
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            return LLMCallResult(
-                request_url=request_url,
-                request_payload=payload,
-                response_payload=None,
-                raw_text=None,
-                parsed_json=None,
-                text="",
-                tag=None,
-                error=f"Invalid LLM response JSON: {exc}",
-                model_name=model_config.name,
-                attempts=previous_attempts,
-            )
+        while True:
+            try:
+                body = self._post_chat_completion(
+                    request_url,
+                    payload,
+                    model_config=model_config,
+                )
+            except urllib.error.URLError as exc:
+                return LLMCallResult(
+                    request_url=request_url,
+                    request_payload=payload,
+                    response_payload=None,
+                    raw_text=None,
+                    parsed_json=None,
+                    text="",
+                    tag=None,
+                    error=f"LLM request failed: {exc}",
+                    model_name=model_config.name,
+                    attempts=previous_attempts,
+                )
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                return LLMCallResult(
+                    request_url=request_url,
+                    request_payload=payload,
+                    response_payload=None,
+                    raw_text=None,
+                    parsed_json=None,
+                    text="",
+                    tag=None,
+                    error=f"Invalid LLM response JSON: {exc}",
+                    model_name=model_config.name,
+                    attempts=previous_attempts,
+                )
 
-        try:
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            return LLMCallResult(
-                request_url=request_url,
-                request_payload=payload,
-                response_payload=body,
-                raw_text=None,
-                parsed_json=None,
-                text="",
-                tag=None,
-                error=f"Unexpected LLM response: {exc}",
-                model_name=model_config.name,
-                attempts=previous_attempts,
+            message = _extract_response_message(body)
+            if message is None:
+                return LLMCallResult(
+                    request_url=request_url,
+                    request_payload=payload,
+                    response_payload=body,
+                    raw_text=None,
+                    parsed_json=None,
+                    text="",
+                    tag=None,
+                    error="Unexpected LLM response: choices[0].message missing.",
+                    model_name=model_config.name,
+                    attempts=previous_attempts,
+                )
+
+            tool_calls = self._supported_tool_calls(message)
+            if not tool_calls:
+                content = message.get("content")
+                break
+
+            if tool_rounds >= max_tool_rounds:
+                return LLMCallResult(
+                    request_url=request_url,
+                    request_payload=payload,
+                    response_payload=body,
+                    raw_text=None,
+                    parsed_json=None,
+                    text="",
+                    tag=None,
+                    error="LLM exceeded web search tool call limit.",
+                    model_name=model_config.name,
+                    attempts=previous_attempts,
+                )
+
+            messages.append(_assistant_tool_call_message(message, tool_calls))
+            messages.extend(self._execute_tool_calls(tool_calls))
+            tool_rounds += 1
+            payload = self._build_chat_payload(
+                model_config,
+                messages=messages,
+                tools=tools,
             )
 
         raw_text = _flatten_content(content)
@@ -227,6 +284,163 @@ class OpenAICompatClient:
             model_name=model_config.name,
             attempts=previous_attempts,
         )
+
+    def _build_chat_payload(
+        self,
+        model_config: LLMModelConfig,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": model_config.model,
+            "temperature": model_config.temperature,
+            "max_tokens": model_config.max_tokens,
+            "messages": messages,
+            "chat_template_kwargs": {
+                "enable_thinking": model_config.enable_thinking,
+            },
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        return payload
+
+    def _post_chat_completion(
+        self,
+        request_url: str,
+        payload: dict[str, object],
+        *,
+        model_config: LLMModelConfig,
+    ) -> dict[str, object]:
+        request = urllib.request.Request(
+            request_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=self._headers(model_config),
+            method="POST",
+        )
+        with urllib.request.urlopen(
+            request, timeout=model_config.timeout_seconds
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if isinstance(body, dict):
+            return body
+        raise json.JSONDecodeError("LLM response root is not an object", "", 0)
+
+    def _web_search_tools(self) -> list[dict[str, Any]]:
+        web_cfg = getattr(self.config, "web_search", None)
+        if (
+            self._web_search is None
+            or web_cfg is None
+            or not web_cfg.enabled
+            or not web_cfg.tool_calling_enabled
+        ):
+            return []
+
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": _normalize_tool_name(web_cfg.tool_name),
+                    "description": web_cfg.tool_description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query to send to the web search API.",
+                            },
+                            "count": {
+                                "type": "integer",
+                                "description": "Number of web results to return. Defaults to the configured count.",
+                                "minimum": 1,
+                                "maximum": 12,
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ]
+
+    def _web_search_tool_max_rounds(self) -> int:
+        web_cfg = getattr(self.config, "web_search", None)
+        if web_cfg is None:
+            return 0
+        return max(1, int(web_cfg.tool_max_rounds))
+
+    def _supported_tool_calls(
+        self,
+        message: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        web_cfg = getattr(self.config, "web_search", None)
+        if web_cfg is None:
+            return []
+        expected_name = _normalize_tool_name(web_cfg.tool_name)
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return []
+        supported: list[dict[str, Any]] = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            if function.get("name") == expected_name:
+                supported.append(tool_call)
+        return supported
+
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        web_cfg = getattr(self.config, "web_search", None)
+        if self._web_search is None or web_cfg is None:
+            return []
+        tool_name = _normalize_tool_name(web_cfg.tool_name)
+        tool_messages: list[dict[str, Any]] = []
+        for index, tool_call in enumerate(tool_calls, start=1):
+            call_id = str(tool_call.get("id") or f"{tool_name}-{index}")
+            payload = self._execute_web_search_tool(tool_call)
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": tool_name,
+                    "content": json.dumps(payload, ensure_ascii=False),
+                }
+            )
+        return tool_messages
+
+    def _execute_web_search_tool(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        web_cfg = getattr(self.config, "web_search", None)
+        if web_cfg is None:
+            return {"error": "web_search is not configured.", "results": []}
+        function = tool_call.get("function")
+        raw_arguments = function.get("arguments") if isinstance(function, dict) else "{}"
+        try:
+            arguments = _parse_tool_arguments(raw_arguments)
+        except ValueError as exc:
+            return {"error": f"Invalid web_search arguments: {exc}", "results": []}
+
+        query = str(arguments.get("query", "")).strip()
+        if not query:
+            return {"error": "web_search query is required.", "results": []}
+        raw_count = arguments.get("count", web_cfg.count)
+        try:
+            count = min(12, max(1, int(raw_count)))
+        except (TypeError, ValueError):
+            count = min(12, max(1, int(web_cfg.count)))
+
+        assert self._web_search is not None
+        results = self._web_search.search(query, count=count)
+        return {
+            "query": query,
+            "provider": web_cfg.provider,
+            "results": [result.as_tool_payload() for result in results],
+        }
 
     def _model_configs(self) -> tuple[LLMModelConfig, ...]:
         models = getattr(self.config, "models", ())
@@ -308,6 +522,56 @@ def _with_attempts(
         model_name=result.model_name,
         attempts=attempts,
     )
+
+
+def _extract_response_message(body: dict[str, object]) -> dict[str, Any] | None:
+    try:
+        message = body["choices"][0]["message"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if isinstance(message, dict):
+        return message
+    return None
+
+
+def _assistant_tool_call_message(
+    message: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    assistant_message: dict[str, Any] = {
+        "role": "assistant",
+        "content": message.get("content") or "",
+        "tool_calls": [
+            {
+                "id": str(tool_call.get("id") or f"tool-call-{index}"),
+                "type": str(tool_call.get("type") or "function"),
+                "function": tool_call.get("function") or {},
+            }
+            for index, tool_call in enumerate(tool_calls, start=1)
+        ],
+    }
+    return assistant_message
+
+
+def _parse_tool_arguments(raw_arguments: object) -> dict[str, Any]:
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+    if not isinstance(raw_arguments, str):
+        raise ValueError("arguments must be a JSON object string")
+    try:
+        parsed = json.loads(raw_arguments or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(str(exc)) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("arguments root must be an object")
+    return parsed
+
+
+def _normalize_tool_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip())
+    if not cleaned:
+        return "web_search"
+    return cleaned[:64]
 
 
 def _compose_user_prompt(

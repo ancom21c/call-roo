@@ -315,6 +315,7 @@ class ServiceBluetoothResetTest(unittest.TestCase):
                     "font_size": 30,
                     "label_width_px": 200,
                     "label_height_px": 100,
+                    "content_margin_px": 6,
                     "text_vertical_align": "bottom",
                     "text_items": [
                         {
@@ -348,6 +349,8 @@ class ServiceBluetoothResetTest(unittest.TestCase):
             self.assertEqual(manual_payload["text_vertical_align"], "bottom")
             self.assertEqual(manual_payload["label_width_px"], 200)
             self.assertEqual(manual_payload["label_height_px"], 100)
+            self.assertEqual(manual_payload["content_margin_px"], 6)
+            self.assertEqual(result["manual_content_margin_px"], 6)
             self.assertEqual(manual_payload["text_items"][0]["text"], "위쪽")
             self.assertEqual(manual_payload["text_items"][0]["vertical_align"], "top")
             self.assertEqual(manual_payload["image_scale_percent"], 160)

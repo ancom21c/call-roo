@@ -54,6 +54,9 @@ MANUAL_FONT_SIZE_MAX = 56
 MANUAL_LABEL_WIDTH_MIN = 80
 MANUAL_LABEL_HEIGHT_MIN = 56
 MANUAL_LABEL_HEIGHT_MAX = 1200
+MANUAL_CONTENT_MARGIN_DEFAULT = 16
+MANUAL_CONTENT_MARGIN_MIN = 0
+MANUAL_CONTENT_MARGIN_MAX = 96
 MANUAL_IMAGE_SCALE_MIN = 25
 MANUAL_IMAGE_SCALE_MAX = 300
 MANUAL_IMAGE_ROTATION_MIN = -180
@@ -2351,14 +2354,14 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
     .canvas-image-layer {
       position: absolute;
-      inset: 16px;
+      inset: var(--content-margin, 16px);
       overflow: hidden;
       z-index: 1;
     }
 
     .canvas-text-layer {
       position: absolute;
-      inset: 16px;
+      inset: var(--content-margin, 16px);
       overflow: hidden;
       z-index: 2;
     }
@@ -2758,6 +2761,9 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
           <label class="field">라벨 높이 (dot)
             <input id="label-height" type="number" min="56" max="1200" step="4" value="220">
           </label>
+          <label class="field">내부 여백 (dot)
+            <input id="content-margin" type="number" min="0" max="96" step="4" value="16">
+          </label>
         </div>
         <div class="form-grid">
           <label class="field">테두리
@@ -2881,7 +2887,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
   <script>
     const allowedImageExtensions = new Set(["png", "jpg", "jpeg", "bmp", "gif", "webp"]);
     const maxImageBytes = 8 * 1024 * 1024;
-    const paperPadding = 16;
+    const defaultContentMargin = 16;
     const minImageSize = 8;
     const minVisibleImageDots = 8;
     const minTextSize = 8;
@@ -2917,6 +2923,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       return {
         labelWidth: clampNumber(document.getElementById("label-width").value, 80, 344, 344),
         labelHeight: clampNumber(document.getElementById("label-height").value, 56, 1200, 220),
+        contentMargin: clampSteppedNumber(document.getElementById("content-margin").value, 0, 96, defaultContentMargin),
         borderStyle: document.getElementById("border-style").value,
         textAlign: document.getElementById("text-align").value,
         textVerticalAlign: document.getElementById("text-vertical-align").value,
@@ -2929,8 +2936,8 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
     function contentBox(options = readManualOptions()) {
       return {
-        width: Math.max(1, options.labelWidth - (paperPadding * 2)),
-        height: Math.max(1, options.labelHeight - (paperPadding * 2)),
+        width: Math.max(1, options.labelWidth - (options.contentMargin * 2)),
+        height: Math.max(1, options.labelHeight - (options.contentMargin * 2)),
       };
     }
 
@@ -3412,6 +3419,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       paper.style.width = `${options.labelWidth}px`;
       paper.style.height = `${options.labelHeight}px`;
       paper.style.minHeight = `${options.labelHeight}px`;
+      paper.style.setProperty("--content-margin", `${options.contentMargin}px`);
       renderCanvasImages(imageLayer, options);
       renderCanvasTexts(textLayer, options);
 
@@ -3458,12 +3466,14 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
       document.getElementById("label-width").value = options.labelWidth;
       document.getElementById("label-height").value = options.labelHeight;
+      document.getElementById("content-margin").value = options.contentMargin;
       renderImageList();
       renderTextList();
 
       const pieces = [];
       pieces.push(`후보 폭 384dot 고정`);
       pieces.push(`${options.labelWidth}×${options.labelHeight}dot 라벨`);
+      pieces.push(`${options.contentMargin}dot 여백`);
       const textLength = state.texts.reduce((sum, item) => sum + item.text.trim().length, 0);
       if (textLength) {
         pieces.push(`${textLength}자`);
@@ -3879,6 +3889,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
           font_size: options.fontSize,
           label_width_px: options.labelWidth,
           label_height_px: options.labelHeight,
+          content_margin_px: options.contentMargin,
           image_scale_percent: options.imageScale,
           image_crop: options.imageCrop,
           image_rotation_degrees: options.imageRotation,
@@ -3967,14 +3978,17 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
         const labelSize = entry.label_width_px && entry.label_height_px
           ? `${entry.label_width_px}×${entry.label_height_px}dot`
           : "라벨 크기 없음";
+        const marginSize = Number.isFinite(Number(entry.content_margin_px))
+          ? `${entry.content_margin_px}dot 여백`
+          : "16dot 여백";
         const outputSize = entry.output_width_px && entry.output_height_px
           ? `출력 ${entry.output_width_px}×${entry.output_height_px}dot`
           : "출력 크기 없음";
         const imageCount = Number(entry.image_count || 0);
         const text = entry.text_preview || (entry.image_name ? `그림 ${entry.image_name}` : "수동 출력");
         const detail = imageCount > 0
-          ? `${outputSize} · 라벨 ${labelSize} · 그림 ${imageCount}개`
-          : `${outputSize} · 라벨 ${labelSize}`;
+          ? `${outputSize} · 라벨 ${labelSize} · ${marginSize} · 그림 ${imageCount}개`
+          : `${outputSize} · 라벨 ${labelSize} · ${marginSize}`;
         const image = entry.exists
           ? `<img class="history-thumb" src="${escapeHtml(entry.image_url)}" alt="${escapeHtml(text)}">`
           : `<div class="history-thumb"></div>`;
@@ -4093,6 +4107,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
     document.getElementById("manual-text").addEventListener("input", handleManualTextInput);
     document.getElementById("label-width").addEventListener("input", renderPreview);
     document.getElementById("label-height").addEventListener("input", renderPreview);
+    document.getElementById("content-margin").addEventListener("input", renderPreview);
     document.getElementById("border-style").addEventListener("change", renderPreview);
     document.getElementById("text-align").addEventListener("change", applySelectedTextStyle);
     document.getElementById("text-vertical-align").addEventListener("change", applySelectedTextStyle);
@@ -4356,6 +4371,9 @@ class DashboardSnapshotBuilder:
                         ),
                         "label_width_px": _optional_number(metadata.get("label_width_px")),
                         "label_height_px": _optional_number(metadata.get("label_height_px")),
+                        "content_margin_px": _optional_number(
+                            metadata.get("content_margin_px")
+                        ),
                         "image_scale_percent": _optional_number(
                             metadata.get("image_scale_percent")
                         ),
@@ -5339,6 +5357,17 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
     font_size = _manual_font_size(payload.get("font_size"), config.layout.body_font_size)
     label_width_px = _manual_label_width(payload.get("label_width_px"), config)
     label_height_px = _manual_label_height(payload.get("label_height_px"))
+    content_margin_px = _manual_content_margin(
+        _first_present(
+            payload,
+            "content_margin_px",
+            "content_margin",
+            "margin_px",
+            "margin",
+            "padding_px",
+            "padding",
+        )
+    )
     image_scale_percent = _manual_number_range(
         payload.get("image_scale_percent"),
         default=100,
@@ -5358,11 +5387,13 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         payload=payload,
         label_width_px=label_width_px,
         label_height_px=label_height_px,
+        content_margin_px=content_margin_px,
     )
     text_items = _save_manual_text_items(
         payload=payload,
         label_width_px=label_width_px,
         label_height_px=label_height_px,
+        content_margin_px=content_margin_px,
         font_size=font_size,
         text_align=text_align,
         text_vertical_align=text_vertical_align,
@@ -5384,6 +5415,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         "font_size": font_size,
         "label_width_px": label_width_px,
         "label_height_px": label_height_px,
+        "content_margin_px": content_margin_px,
         "image_scale_percent": image_scale_percent,
         "image_crop": image_crop,
         "image_rotation_degrees": image_rotation_degrees,
@@ -5413,6 +5445,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
             "font_size": font_size,
             "label_width_px": label_width_px,
             "label_height_px": label_height_px,
+            "content_margin_px": content_margin_px,
             "image_scale_percent": image_scale_percent,
             "image_crop": image_crop,
             "image_rotation_degrees": image_rotation_degrees,
@@ -5439,6 +5472,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         "text_chars": len(text) or sum(len(str(item.get("text", ""))) for item in text_items),
         "text_count": len(text_items) if text_items else (1 if text else 0),
         "border_style": border_style,
+        "content_margin_px": content_margin_px,
         "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
         "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
     }
@@ -5474,6 +5508,17 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
     font_size = _manual_font_size(metadata.get("font_size"), config.layout.body_font_size)
     label_width_px = _manual_label_width(metadata.get("label_width_px"), config)
     label_height_px = _manual_label_height(metadata.get("label_height_px"))
+    content_margin_px = _manual_content_margin(
+        _first_present(
+            metadata,
+            "content_margin_px",
+            "content_margin",
+            "margin_px",
+            "margin",
+            "padding_px",
+            "padding",
+        )
+    )
     image_scale_percent = _manual_number_range(
         metadata.get("image_scale_percent"),
         default=100,
@@ -5496,6 +5541,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         metadata=metadata,
         label_width_px=label_width_px,
         label_height_px=label_height_px,
+        content_margin_px=content_margin_px,
         font_size=font_size,
         text_align=text_align,
         text_vertical_align=text_vertical_align,
@@ -5526,6 +5572,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         "font_size": font_size,
         "label_width_px": label_width_px,
         "label_height_px": label_height_px,
+        "content_margin_px": content_margin_px,
         "image_scale_percent": image_scale_percent,
         "image_crop": image_crop,
         "image_rotation_degrees": image_rotation_degrees,
@@ -5557,6 +5604,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
             "font_size": font_size,
             "label_width_px": label_width_px,
             "label_height_px": label_height_px,
+            "content_margin_px": content_margin_px,
             "image_scale_percent": image_scale_percent,
             "image_crop": image_crop,
             "image_rotation_degrees": image_rotation_degrees,
@@ -5586,6 +5634,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         "text_chars": len(text) or sum(len(str(item.get("text", ""))) for item in text_items),
         "text_count": len(text_items) if text_items else (1 if text else 0),
         "border_style": border_style,
+        "content_margin_px": content_margin_px,
         "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
         "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
     }
@@ -5601,10 +5650,19 @@ def _queue_rest_image_print(config: AppConfig, payload: dict[str, Any]) -> dict[
     manual_payload = _rest_manual_options(payload)
     label_width_px = _manual_label_width(manual_payload.get("label_width_px"), config)
     label_height_px = _manual_label_height(manual_payload.get("label_height_px"))
+    content_margin_px = _manual_content_margin(manual_payload.get("content_margin_px"))
     manual_payload["label_width_px"] = label_width_px
     manual_payload["label_height_px"] = label_height_px
+    manual_payload["content_margin_px"] = content_margin_px
     image_item = _rest_image_source(payload)
-    image_item.update(_rest_image_item_options(payload, label_width_px, label_height_px))
+    image_item.update(
+        _rest_image_item_options(
+            payload,
+            label_width_px,
+            label_height_px,
+            content_margin_px,
+        )
+    )
     manual_payload["text"] = _optional_text(payload.get("text")) or ""
     manual_payload["images"] = [image_item]
     return _queue_manual_print(config, manual_payload)
@@ -5614,6 +5672,17 @@ def _rest_manual_options(payload: dict[str, Any]) -> dict[str, Any]:
     options: dict[str, Any] = {}
     _copy_first_present(options, payload, "label_width_px", "label_width_px", "label_width")
     _copy_first_present(options, payload, "label_height_px", "label_height_px", "label_height")
+    _copy_first_present(
+        options,
+        payload,
+        "content_margin_px",
+        "content_margin_px",
+        "content_margin",
+        "margin_px",
+        "margin",
+        "padding_px",
+        "padding",
+    )
     _copy_first_present(options, payload, "border_style", "border_style", "border")
     _copy_first_present(options, payload, "text_align", "text_align", "align")
     _copy_first_present(
@@ -5632,12 +5701,15 @@ def _rest_image_item_options(
     payload: dict[str, Any],
     label_width_px: int,
     label_height_px: int,
+    content_margin_px: int,
 ) -> dict[str, Any]:
+    content_width = max(1, label_width_px - (content_margin_px * 2))
+    content_height = max(1, label_height_px - (content_margin_px * 2))
     item: dict[str, Any] = {
         "x": 0,
         "y": 0,
-        "width": label_width_px,
-        "height": label_height_px,
+        "width": content_width,
+        "height": content_height,
     }
     _copy_first_present(item, payload, "x", "x", "image_x")
     _copy_first_present(item, payload, "y", "y", "image_y")
@@ -5830,6 +5902,7 @@ def _copy_manual_history_text_items(
     metadata: dict[str, Any],
     label_width_px: int,
     label_height_px: int,
+    content_margin_px: int,
     font_size: int,
     text_align: str,
     text_vertical_align: str,
@@ -5839,6 +5912,8 @@ def _copy_manual_history_text_items(
         return []
 
     text_items: list[dict[str, Any]] = []
+    content_width = max(1, label_width_px - (content_margin_px * 2))
+    content_height = max(1, label_height_px - (content_margin_px * 2))
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
             continue
@@ -5852,26 +5927,26 @@ def _copy_manual_history_text_items(
                 "x": _manual_number_range(
                     item.get("x"),
                     default=0,
-                    minimum=-label_width_px,
-                    maximum=label_width_px,
+                    minimum=-content_width,
+                    maximum=content_width,
                 ),
                 "y": _manual_number_range(
                     item.get("y"),
                     default=0,
-                    minimum=-label_height_px,
-                    maximum=label_height_px,
+                    minimum=-content_height,
+                    maximum=content_height,
                 ),
                 "width": _manual_number_range(
                     item.get("width"),
-                    default=max(1, label_width_px - 32),
+                    default=content_width,
                     minimum=8,
-                    maximum=max(8, label_width_px * 2),
+                    maximum=max(8, content_width * 2),
                 ),
                 "height": _manual_number_range(
                     item.get("height"),
-                    default=max(1, label_height_px - 32),
+                    default=content_height,
                     minimum=8,
-                    maximum=max(8, label_height_px * 2),
+                    maximum=max(8, content_height * 2),
                 ),
                 "font_size": _manual_number_range(
                     item.get("font_size"),
@@ -6347,6 +6422,7 @@ def _save_manual_image_items(
     payload: dict[str, Any],
     label_width_px: int,
     label_height_px: int,
+    content_margin_px: int,
 ) -> list[dict[str, Any]]:
     raw_items = payload.get("images")
     if raw_items is None:
@@ -6356,6 +6432,8 @@ def _save_manual_image_items(
         raise ValueError("images must be a list")
 
     image_items: list[dict[str, Any]] = []
+    content_width = max(1, label_width_px - (content_margin_px * 2))
+    content_height = max(1, label_height_px - (content_margin_px * 2))
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
             raise ValueError("image entries must be objects")
@@ -6373,15 +6451,15 @@ def _save_manual_image_items(
         )
         item_width = _manual_number_range(
             item.get("width"),
-            default=min(label_width_px, 180),
+            default=min(content_width, 180),
             minimum=8,
-            maximum=max(8, label_width_px * 2),
+            maximum=max(8, content_width * 2),
         )
         item_height = _manual_number_range(
             item.get("height"),
-            default=min(label_height_px, 120),
+            default=min(content_height, 120),
             minimum=8,
-            maximum=max(8, label_height_px * 2),
+            maximum=max(8, content_height * 2),
         )
         image_items.append(
             {
@@ -6391,14 +6469,14 @@ def _save_manual_image_items(
                 "x": _manual_number_range(
                     item.get("x"),
                     default=0,
-                    minimum=-label_width_px,
-                    maximum=label_width_px,
+                    minimum=-content_width,
+                    maximum=content_width,
                 ),
                 "y": _manual_number_range(
                     item.get("y"),
                     default=0,
-                    minimum=-label_height_px,
-                    maximum=label_height_px,
+                    minimum=-content_height,
+                    maximum=content_height,
                 ),
                 "width": item_width,
                 "height": item_height,
@@ -6419,6 +6497,7 @@ def _save_manual_text_items(
     payload: dict[str, Any],
     label_width_px: int,
     label_height_px: int,
+    content_margin_px: int,
     font_size: int,
     text_align: str,
     text_vertical_align: str,
@@ -6430,6 +6509,8 @@ def _save_manual_text_items(
         raise ValueError("text_items must be a list")
 
     text_items: list[dict[str, Any]] = []
+    content_width = max(1, label_width_px - (content_margin_px * 2))
+    content_height = max(1, label_height_px - (content_margin_px * 2))
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
             raise ValueError("text item entries must be objects")
@@ -6438,15 +6519,15 @@ def _save_manual_text_items(
             continue
         item_width = _manual_number_range(
             item.get("width"),
-            default=max(1, label_width_px - (16 * 2)),
+            default=content_width,
             minimum=8,
-            maximum=max(8, label_width_px * 2),
+            maximum=max(8, content_width * 2),
         )
         item_height = _manual_number_range(
             item.get("height"),
-            default=max(1, label_height_px - (16 * 2)),
+            default=content_height,
             minimum=8,
-            maximum=max(8, label_height_px * 2),
+            maximum=max(8, content_height * 2),
         )
         text_items.append(
             {
@@ -6455,14 +6536,14 @@ def _save_manual_text_items(
                 "x": _manual_number_range(
                     item.get("x"),
                     default=0,
-                    minimum=-label_width_px,
-                    maximum=label_width_px,
+                    minimum=-content_width,
+                    maximum=content_width,
                 ),
                 "y": _manual_number_range(
                     item.get("y"),
                     default=0,
-                    minimum=-label_height_px,
-                    maximum=label_height_px,
+                    minimum=-content_height,
+                    maximum=content_height,
                 ),
                 "width": item_width,
                 "height": item_height,
@@ -6569,6 +6650,7 @@ def _save_manual_history(
         font_size=int(metadata.get("font_size") or config.layout.body_font_size),
         label_width_px=int(metadata.get("label_width_px") or 0),
         label_height_px=int(metadata.get("label_height_px") or 0),
+        content_margin_px=_manual_content_margin(metadata.get("content_margin_px")),
         image_scale_percent=int(metadata.get("image_scale_percent") or 100),
         image_crop=bool(metadata.get("image_crop", False)),
         image_rotation_degrees=int(metadata.get("image_rotation_degrees") or 0),
@@ -6682,6 +6764,15 @@ def _manual_label_height(value: Any) -> int:
         default=220,
         minimum=MANUAL_LABEL_HEIGHT_MIN,
         maximum=MANUAL_LABEL_HEIGHT_MAX,
+    )
+
+
+def _manual_content_margin(value: Any) -> int:
+    return _manual_number_range(
+        value,
+        default=MANUAL_CONTENT_MARGIN_DEFAULT,
+        minimum=MANUAL_CONTENT_MARGIN_MIN,
+        maximum=MANUAL_CONTENT_MARGIN_MAX,
     )
 
 

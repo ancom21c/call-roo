@@ -19,8 +19,11 @@ TEXT_BOX_RADIUS = 10
 TEXT_BOX_INSET = 4
 TITLE_ICON_GAP_RATIO = 0.32
 NO_LINE_START_CHARS = tuple(".,!?;:)]}）］｝〉》」』”’、。，！？：；…")
-MANUAL_BOX_PADDING_X = 16
-MANUAL_BOX_PADDING_Y = 16
+MANUAL_CONTENT_MARGIN_DEFAULT = 16
+MANUAL_CONTENT_MARGIN_MIN = 0
+MANUAL_CONTENT_MARGIN_MAX = 96
+MANUAL_BOX_PADDING_X = MANUAL_CONTENT_MARGIN_DEFAULT
+MANUAL_BOX_PADDING_Y = MANUAL_CONTENT_MARGIN_DEFAULT
 MANUAL_BOX_RADIUS = 12
 MANUAL_BORDER_STYLES = {"none", "thin", "thick", "double"}
 MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
@@ -150,6 +153,7 @@ def compose_manual_print(
     font_size: int | None = None,
     label_width_px: int | None = None,
     label_height_px: int | None = None,
+    content_margin_px: int | None = None,
     image_scale_percent: int = 100,
     image_crop: bool = False,
     image_rotation_degrees: int = 0,
@@ -178,6 +182,15 @@ def compose_manual_print(
     )
     text_size = _clamp_int(font_size or config.body_font_size, 16, 56)
     body_font = load_font(config.font_path, text_size)
+    content_margin = _clamp_int(
+        (
+            content_margin_px
+            if content_margin_px is not None
+            else MANUAL_CONTENT_MARGIN_DEFAULT
+        ),
+        MANUAL_CONTENT_MARGIN_MIN,
+        MANUAL_CONTENT_MARGIN_MAX,
+    )
 
     max_label_width = config.paper_width_px - (config.side_margin_px * 2)
     label_width = _clamp_int(
@@ -190,9 +203,9 @@ def compose_manual_print(
         if label_height_px is not None
         else None
     )
-    inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
+    inner_width = max(1, label_width - (content_margin * 2))
     inner_height = (
-        max(1, fixed_label_height - (MANUAL_BOX_PADDING_Y * 2))
+        max(1, fixed_label_height - (content_margin * 2))
         if fixed_label_height is not None
         else None
     )
@@ -255,7 +268,7 @@ def compose_manual_print(
         else:
             content_height += text_height
 
-    box_height = fixed_label_height or content_height + (MANUAL_BOX_PADDING_Y * 2)
+    box_height = fixed_label_height or content_height + (content_margin * 2)
     total_height = config.side_margin_px + box_height + config.side_margin_px
     canvas = Image.new("L", (config.paper_width_px, total_height), color=255)
     draw = ImageDraw.Draw(canvas)
@@ -270,8 +283,8 @@ def compose_manual_print(
     _draw_manual_border(draw, box, normalized_border)
 
     if positioned_images and not legacy_flow:
-        positioned_inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
-        positioned_inner_height = max(1, box_height - (MANUAL_BOX_PADDING_Y * 2))
+        positioned_inner_width = max(1, label_width - (content_margin * 2))
+        positioned_inner_height = max(1, box_height - (content_margin * 2))
         for item in positioned_images:
             item_path = item["path"]
             assert isinstance(item_path, Path)
@@ -309,14 +322,15 @@ def compose_manual_print(
             _paste_clipped(
                 canvas,
                 prepared,
-                box[0] + MANUAL_BOX_PADDING_X + item_x,
-                box[1] + MANUAL_BOX_PADDING_Y + item_y,
+                box[0] + content_margin + item_x,
+                box[1] + content_margin + item_y,
                 box,
+                content_margin=content_margin,
             )
 
     if positioned_texts:
-        positioned_inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
-        positioned_inner_height = max(1, box_height - (MANUAL_BOX_PADDING_Y * 2))
+        positioned_inner_width = max(1, label_width - (content_margin * 2))
+        positioned_inner_height = max(1, box_height - (content_margin * 2))
         for item in positioned_texts:
             item_text = str(item.get("text", "")).strip()
             if not item_text:
@@ -359,19 +373,20 @@ def compose_manual_print(
                 canvas,
                 item_text,
                 item_font,
-                box[0] + MANUAL_BOX_PADDING_X + item_x,
-                box[1] + MANUAL_BOX_PADDING_Y + item_y,
+                box[0] + content_margin + item_x,
+                box[1] + content_margin + item_y,
                 item_width,
                 item_height,
                 item_align,
                 item_vertical_align,
                 box,
+                content_margin=content_margin,
             )
 
-    spare_height = max(0, box_height - (MANUAL_BOX_PADDING_Y * 2) - content_height)
+    spare_height = max(0, box_height - (content_margin * 2) - content_height)
     cursor_y = (
         box[1]
-        + MANUAL_BOX_PADDING_Y
+        + content_margin
         + _vertical_offset(spare_height, normalized_vertical_align)
     )
     for index, (kind, value) in enumerate(sections):
@@ -379,8 +394,8 @@ def compose_manual_print(
             cursor_y += config.section_gap_px
         if kind == "image":
             assert isinstance(value, Image.Image)
-            x = box[0] + MANUAL_BOX_PADDING_X + ((inner_width - value.width) // 2)
-            _paste_clipped(canvas, value, x, cursor_y, box)
+            x = box[0] + content_margin + ((inner_width - value.width) // 2)
+            _paste_clipped(canvas, value, x, cursor_y, box, content_margin=content_margin)
             cursor_y += value.height
             continue
 
@@ -389,7 +404,7 @@ def compose_manual_print(
             draw,
             value,
             body_font,
-            box[0] + MANUAL_BOX_PADDING_X,
+            box[0] + content_margin,
             cursor_y,
             inner_width,
             normalized_align,
@@ -578,11 +593,13 @@ def _paste_clipped(
     x: int,
     y: int,
     clip_box: tuple[int, int, int, int],
+    *,
+    content_margin: int = MANUAL_CONTENT_MARGIN_DEFAULT,
 ) -> None:
-    left = max(x, clip_box[0] + MANUAL_BOX_PADDING_X)
-    top = max(y, clip_box[1] + MANUAL_BOX_PADDING_Y)
-    right = min(x + image.width, clip_box[2] - MANUAL_BOX_PADDING_X + 1)
-    bottom = min(y + image.height, clip_box[3] - MANUAL_BOX_PADDING_Y + 1)
+    left = max(x, clip_box[0] + content_margin)
+    top = max(y, clip_box[1] + content_margin)
+    right = min(x + image.width, clip_box[2] - content_margin + 1)
+    bottom = min(y + image.height, clip_box[3] - content_margin + 1)
     if right <= left or bottom <= top:
         return
     crop = image.crop((left - x, top - y, right - x, bottom - y))
@@ -600,11 +617,13 @@ def _draw_positioned_text_box(
     align: str,
     vertical_align: str,
     clip_box: tuple[int, int, int, int],
+    *,
+    content_margin: int = MANUAL_CONTENT_MARGIN_DEFAULT,
 ) -> None:
-    left = max(x, clip_box[0] + MANUAL_BOX_PADDING_X)
-    top = max(y, clip_box[1] + MANUAL_BOX_PADDING_Y)
-    right = min(x + width, clip_box[2] - MANUAL_BOX_PADDING_X + 1)
-    bottom = min(y + height, clip_box[3] - MANUAL_BOX_PADDING_Y + 1)
+    left = max(x, clip_box[0] + content_margin)
+    top = max(y, clip_box[1] + content_margin)
+    right = min(x + width, clip_box[2] - content_margin + 1)
+    bottom = min(y + height, clip_box[3] - content_margin + 1)
     if right <= left or bottom <= top:
         return
 

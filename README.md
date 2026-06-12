@@ -212,7 +212,7 @@ python3 -m callroo_printer --config config.json --dashboard --dashboard-host 127
 
 출력 후보 PNG는 `layout.paper_width_px` 프린터 도트 폭(기본 384dot)에 맞춰 합성되고, 라벨 폭/높이, 텍스트 박스, 그림 좌표도 같은 dot 기준으로 편집합니다. 캔버스에서 라벨 크기를 드래그로 조절하고, 여러 그림과 여러 텍스트 박스를 올려 위치와 크기를 조정한 뒤 출력 큐에 넣을 수 있습니다. 텍스트 박스는 가로 정렬(`left`, `center`, `right`)과 세로 정렬(`top`, `center`, `bottom`)을 지원합니다.
 
-선택한 그림이나 텍스트 박스의 x/y/폭/높이는 직접 입력할 수 있고, 범위를 벗어난 값은 유효한 dot 범위로 자동 보정됩니다. 드래그로 크기를 바꿀 때도 4dot 단위로 근사되어 입력칸 값과 캔버스 값이 어긋나지 않도록 맞춥니다. 제출 시 수동 출력 이력에도 PNG가 저장되어 프린터 서비스가 꺼져 있어도 브라우저에서 확인, 다운로드, 재출력, 삭제할 수 있습니다.
+선택한 그림이나 텍스트 박스의 x/y/폭/높이는 직접 입력할 수 있고, 범위를 벗어난 값은 유효한 dot 범위로 자동 보정됩니다. 라벨 내부 여백도 0-96dot 범위에서 조절할 수 있으며, 미리보기와 실제 출력의 그림/텍스트 좌표계는 이 여백 안쪽 영역을 기준으로 맞춰집니다. 드래그로 크기를 바꿀 때도 4dot 단위로 근사되어 입력칸 값과 캔버스 값이 어긋나지 않도록 맞춥니다. 제출 시 수동 출력 이력에도 PNG가 저장되어 프린터 서비스가 꺼져 있어도 브라우저에서 확인, 다운로드, 재출력, 삭제할 수 있습니다.
 
 간단한 REST 출력 API도 제공합니다. 모든 크기와 좌표 값은 최종 출력 후보 안의 프린터 dot 기준이며, 범위를 벗어난 값은 서버에서 유효 범위로 보정됩니다. 응답에는 공통으로 `ok`, `request_id`, `history_url`, `download_url`이 포함됩니다.
 
@@ -223,7 +223,7 @@ REST API는 호환성을 위해 단일 `text` 문구만 받습니다. 여러 텍
 ```bash
 curl -X POST http://127.0.0.1:3001/api/print/text \
   -H 'Content-Type: application/json' \
-  -d '{"text":"바로 출력할 문구","label_width":220,"label_height":96,"border":"double","align":"center","vertical_align":"center","font_size":30}'
+  -d '{"text":"바로 출력할 문구","label_width":220,"label_height":96,"margin":8,"border":"double","align":"center","vertical_align":"center","font_size":30}'
 ```
 
 문구 API 옵션:
@@ -233,6 +233,7 @@ curl -X POST http://127.0.0.1:3001/api/print/text \
 | `text` | 출력할 문구. 필수 |
 | `label_width` 또는 `label_width_px` | 라벨 폭 dot |
 | `label_height` 또는 `label_height_px` | 라벨 높이 dot |
+| `content_margin`, `content_margin_px`, `margin`, `margin_px`, `padding`, 또는 `padding_px` | 라벨 내부 여백 dot. 기본 16, 0이면 내부 여백 없음 |
 | `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
 | `align` 또는 `text_align` | `left`, `center`, `right` |
 | `vertical_align` 또는 `text_vertical_align` | `top`, `center`, `bottom` |
@@ -245,6 +246,7 @@ curl -X POST http://127.0.0.1:3001/api/print/image \
   -F image=@./label.png \
   -F label_width=284 \
   -F label_height=180 \
+  -F margin=0 \
   -F border=thin \
   -F image_width=240 \
   -F image_height=140 \
@@ -264,6 +266,7 @@ curl -X POST http://127.0.0.1:3001/api/print/image \
     "content_base64": "BASE64_ENCODED_IMAGE",
     "label_width": 284,
     "label_height": 180,
+    "margin": 0,
     "image_width": 240,
     "image_height": 140,
     "crop": false
@@ -279,6 +282,7 @@ curl -X POST http://127.0.0.1:3001/api/print/image \
 | `text` | 그림 위에 함께 올릴 문구. 선택 |
 | `label_width` 또는 `label_width_px` | 라벨 폭 dot |
 | `label_height` 또는 `label_height_px` | 라벨 높이 dot |
+| `content_margin`, `content_margin_px`, `margin`, `margin_px`, `padding`, 또는 `padding_px` | 라벨 내부 여백 dot. 기본 16, 0이면 그림/텍스트 좌표가 라벨 안쪽 끝부터 시작 |
 | `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
 | `align` 또는 `text_align` | 함께 올린 문구 정렬. `left`, `center`, `right` |
 | `vertical_align` 또는 `text_vertical_align` | 함께 올린 문구 세로 정렬. `top`, `center`, `bottom` |

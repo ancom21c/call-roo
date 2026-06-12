@@ -167,6 +167,59 @@ class LayoutTest(unittest.TestCase):
         self.assertLess(image.getpixel((129, 40)), 245)
         self.assertLess(image.getpixel((209, 70)), 245)
 
+    def test_compose_manual_print_applies_content_margin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            asset_path = Path(tmp) / "fill.png"
+            Image.new("RGB", (100, 80), color="black").save(asset_path)
+
+            no_margin = compose_manual_print(
+                text="",
+                image_path=None,
+                image_items=[
+                    {
+                        "path": asset_path,
+                        "x": 0,
+                        "y": 0,
+                        "width": 100,
+                        "height": 80,
+                    },
+                ],
+                printed_at=datetime(2026, 6, 12, 12, 0, 0),
+                config=_layout_config(),
+                border_style="none",
+                label_width_px=100,
+                label_height_px=128,
+                content_margin_px=0,
+            )
+            with_margin = compose_manual_print(
+                text="",
+                image_path=None,
+                image_items=[
+                    {
+                        "path": asset_path,
+                        "x": 0,
+                        "y": 0,
+                        "width": 100,
+                        "height": 80,
+                    },
+                ],
+                printed_at=datetime(2026, 6, 12, 12, 0, 0),
+                config=_layout_config(),
+                border_style="none",
+                label_width_px=100,
+                label_height_px=128,
+                content_margin_px=24,
+            )
+
+        no_margin_bounds = _dark_bounds(no_margin, (140, 20, 244, 152))
+        with_margin_bounds = _dark_bounds(with_margin, (140, 20, 244, 152))
+        self.assertIsNotNone(no_margin_bounds)
+        self.assertIsNotNone(with_margin_bounds)
+        assert no_margin_bounds is not None
+        assert with_margin_bounds is not None
+        self.assertEqual(no_margin_bounds[0], 142)
+        self.assertEqual(with_margin_bounds[0], 166)
+
     def test_compose_manual_print_preserves_oversized_positioned_image_crop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             asset_path = Path(tmp) / "wide.png"

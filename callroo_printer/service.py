@@ -32,6 +32,9 @@ MANUAL_UPLOADS_DIRNAME = "manual-uploads"
 MANUAL_LABEL_WIDTH_MIN = 80
 MANUAL_LABEL_HEIGHT_MIN = 56
 MANUAL_LABEL_HEIGHT_MAX = 1200
+MANUAL_CONTENT_MARGIN_DEFAULT = 16
+MANUAL_CONTENT_MARGIN_MIN = 0
+MANUAL_CONTENT_MARGIN_MAX = 96
 MANUAL_IMAGE_SCALE_MIN = 25
 MANUAL_IMAGE_SCALE_MAX = 300
 MANUAL_IMAGE_ROTATION_MIN = -180
@@ -383,6 +386,22 @@ class FortunePrinterService:
             minimum=MANUAL_LABEL_HEIGHT_MIN,
             maximum=MANUAL_LABEL_HEIGHT_MAX,
         )
+        content_margin_px = _manual_number_range(
+            _first_present(
+                payload,
+                "content_margin_px",
+                "content_margin",
+                "margin_px",
+                "margin",
+                "padding_px",
+                "padding",
+            ),
+            default=MANUAL_CONTENT_MARGIN_DEFAULT,
+            minimum=MANUAL_CONTENT_MARGIN_MIN,
+            maximum=MANUAL_CONTENT_MARGIN_MAX,
+        )
+        content_width = max(1, label_width_px - (content_margin_px * 2))
+        content_height = max(1, label_height_px - (content_margin_px * 2))
         image_scale_percent = _manual_number_range(
             payload.get("image_scale_percent"),
             default=100,
@@ -425,26 +444,26 @@ class FortunePrinterService:
                     "x": _manual_number_range(
                         item.get("x"),
                         default=0,
-                        minimum=-label_width_px,
-                        maximum=label_width_px,
+                        minimum=-content_width,
+                        maximum=content_width,
                     ),
                     "y": _manual_number_range(
                         item.get("y"),
                         default=0,
-                        minimum=-label_height_px,
-                        maximum=label_height_px,
+                        minimum=-content_height,
+                        maximum=content_height,
                     ),
                     "width": _manual_number_range(
                         item.get("width"),
-                        default=min(label_width_px, 180),
+                        default=min(content_width, 180),
                         minimum=1,
-                        maximum=max(1, label_width_px * 2),
+                        maximum=max(1, content_width * 2),
                     ),
                     "height": _manual_number_range(
                         item.get("height"),
-                        default=min(label_height_px, 120),
+                        default=min(content_height, 120),
                         minimum=1,
-                        maximum=max(1, label_height_px * 2),
+                        maximum=max(1, content_height * 2),
                     ),
                     "rotation_degrees": _manual_number_range(
                         item.get("rotation_degrees"),
@@ -487,15 +506,15 @@ class FortunePrinterService:
                     continue
                 item_width = _manual_number_range(
                     item.get("width"),
-                    default=max(1, label_width_px - 32),
+                    default=content_width,
                     minimum=1,
-                    maximum=max(1, label_width_px * 2),
+                    maximum=max(1, content_width * 2),
                 )
                 item_height = _manual_number_range(
                     item.get("height"),
-                    default=max(1, label_height_px - 32),
+                    default=content_height,
                     minimum=1,
-                    maximum=max(1, label_height_px * 2),
+                    maximum=max(1, content_height * 2),
                 )
                 item_align = _manual_choice(
                     item.get("text_align"),
@@ -514,14 +533,14 @@ class FortunePrinterService:
                         "x": _manual_number_range(
                             item.get("x"),
                             default=0,
-                            minimum=-label_width_px,
-                            maximum=label_width_px,
+                            minimum=-content_width,
+                            maximum=content_width,
                         ),
                         "y": _manual_number_range(
                             item.get("y"),
                             default=0,
-                            minimum=-label_height_px,
-                            maximum=label_height_px,
+                            minimum=-content_height,
+                            maximum=content_height,
                         ),
                         "width": item_width,
                         "height": item_height,
@@ -550,6 +569,7 @@ class FortunePrinterService:
                 "font_size": font_size,
                 "label_width_px": label_width_px,
                 "label_height_px": label_height_px,
+                "content_margin_px": content_margin_px,
                 "image_scale_percent": image_scale_percent,
                 "image_crop": image_crop,
                 "image_rotation_degrees": image_rotation_degrees,
@@ -584,6 +604,7 @@ class FortunePrinterService:
             font_size=font_size,
             label_width_px=label_width_px,
             label_height_px=label_height_px,
+            content_margin_px=content_margin_px,
             image_scale_percent=image_scale_percent,
             image_crop=image_crop,
             image_rotation_degrees=image_rotation_degrees,
@@ -626,6 +647,7 @@ class FortunePrinterService:
                 "manual_font_size": font_size,
                 "manual_label_width_px": label_width_px,
                 "manual_label_height_px": label_height_px,
+                "manual_content_margin_px": content_margin_px,
                 "manual_image_scale_percent": image_scale_percent,
                 "manual_image_crop": image_crop,
                 "manual_image_rotation_degrees": image_rotation_degrees,
@@ -1206,6 +1228,13 @@ def _manual_number_range(
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _first_present(source: dict[str, object], *keys: str) -> object | None:
+    for key in keys:
+        if key in source and source[key] is not None and source[key] != "":
+            return source[key]
+    return None
 
 
 def _resolve_manual_image_path(value: object, outputs_dir: Path) -> Path | None:

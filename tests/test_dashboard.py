@@ -78,6 +78,9 @@ class DashboardHtmlTest(unittest.TestCase):
         self.assertIn("PDF, DOCX, TXT", _PRINTER_DASHBOARD_HTML)
         self.assertIn('id="label-width"', _PRINTER_DASHBOARD_HTML)
         self.assertIn('id="label-height"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn('id="content-margin"', _PRINTER_DASHBOARD_HTML)
+        self.assertIn("content_margin_px: options.contentMargin", _PRINTER_DASHBOARD_HTML)
+        self.assertIn('setProperty("--content-margin"', _PRINTER_DASHBOARD_HTML)
         self.assertIn('id="image-scale"', _PRINTER_DASHBOARD_HTML)
         self.assertIn('id="image-rotation"', _PRINTER_DASHBOARD_HTML)
         self.assertIn('id="image-crop"', _PRINTER_DASHBOARD_HTML)
@@ -663,6 +666,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
                     "font_size": 32,
                     "label_width_px": 220,
                     "label_height_px": 96,
+                    "content_margin_px": 8,
                     "image_scale_percent": 150,
                     "image_crop": True,
                     "image_rotation_degrees": 90,
@@ -679,6 +683,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertEqual(payload["manual_print"]["text_align"], "left")
             self.assertEqual(payload["manual_print"]["label_width_px"], 220)
             self.assertEqual(payload["manual_print"]["label_height_px"], 96)
+            self.assertEqual(payload["manual_print"]["content_margin_px"], 8)
             self.assertEqual(payload["manual_print"]["image_scale_percent"], 150)
             self.assertTrue(payload["manual_print"]["image_crop"])
             self.assertEqual(payload["manual_print"]["image_rotation_degrees"], 90)
@@ -862,6 +867,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
                     "border": "double",
                     "align": "right",
                     "vertical_align": "bottom",
+                    "margin": "4",
                     "font_size": "30",
                 },
             )
@@ -876,6 +882,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertEqual(manual["border_style"], "double")
             self.assertEqual(manual["text_align"], "right")
             self.assertEqual(manual["text_vertical_align"], "bottom")
+            self.assertEqual(manual["content_margin_px"], 4)
             self.assertEqual(manual["font_size"], 30)
 
     def test_queue_rest_image_print_accepts_file_payload_and_params(self) -> None:
@@ -892,6 +899,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
                     },
                     "label_width_px": "240",
                     "label_height_px": "120",
+                    "padding": "0",
                     "border_style": "thick",
                     "image_width": "180",
                     "image_height": "80",
@@ -909,6 +917,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             manual = payload["manual_print"]
             self.assertEqual(manual["label_width_px"], 240)
             self.assertEqual(manual["label_height_px"], 120)
+            self.assertEqual(manual["content_margin_px"], 0)
             self.assertEqual(manual["border_style"], "thick")
             self.assertEqual(manual["images"][0]["width"], 180)
             self.assertEqual(manual["images"][0]["height"], 80)
@@ -916,6 +925,32 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertEqual(manual["images"][0]["rotation_degrees"], 15)
             self.assertTrue(manual["images"][0]["crop"])
             self.assertTrue(Path(manual["images"][0]["path"]).is_file())
+
+    def test_queue_rest_image_print_uses_margin_for_default_image_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_rest_image_print(
+                config,
+                {
+                    "image": {
+                        "filename": "rest.png",
+                        "content_base64": _png_base64(),
+                    },
+                    "label_width": "220",
+                    "label_height": "120",
+                    "margin": "10",
+                },
+            )
+
+            self.assertTrue(result["ok"])
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            manual = payload["manual_print"]
+            self.assertEqual(manual["content_margin_px"], 10)
+            self.assertEqual(manual["images"][0]["width"], 200)
+            self.assertEqual(manual["images"][0]["height"], 100)
 
     def test_parse_multipart_form_extracts_image_file_and_fields(self) -> None:
         boundary = "callroo-test-boundary"

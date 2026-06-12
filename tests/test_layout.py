@@ -253,6 +253,82 @@ class LayoutTest(unittest.TestCase):
 
         self.assertLess(image.getpixel((42, 110)), 245)
 
+    def test_compose_manual_print_positions_multiple_text_boxes(self) -> None:
+        image = compose_manual_print(
+            text="",
+            image_path=None,
+            text_items=[
+                {
+                    "text": "LEFT",
+                    "x": 0,
+                    "y": 0,
+                    "width": 100,
+                    "height": 60,
+                    "font_size": 24,
+                    "text_align": "left",
+                    "vertical_align": "top",
+                },
+                {
+                    "text": "RIGHT",
+                    "x": 180,
+                    "y": 80,
+                    "width": 120,
+                    "height": 60,
+                    "font_size": 24,
+                    "text_align": "right",
+                    "vertical_align": "bottom",
+                },
+            ],
+            printed_at=datetime(2026, 6, 12, 12, 0, 0),
+            config=_layout_config(),
+            border_style="none",
+            label_width_px=344,
+            label_height_px=220,
+        )
+
+        self.assertIsNotNone(_dark_bounds(image, (36, 36, 136, 96)))
+        self.assertIsNotNone(_dark_bounds(image, (216, 116, 336, 176)))
+
+    def test_compose_manual_print_applies_text_vertical_alignment(self) -> None:
+        base_item = {
+            "text": "A",
+            "x": 0,
+            "y": 0,
+            "width": 120,
+            "height": 120,
+            "font_size": 32,
+            "text_align": "center",
+        }
+
+        top_image = compose_manual_print(
+            text="",
+            image_path=None,
+            text_items=[{**base_item, "vertical_align": "top"}],
+            printed_at=datetime(2026, 6, 12, 12, 0, 0),
+            config=_layout_config(),
+            border_style="none",
+            label_width_px=344,
+            label_height_px=180,
+        )
+        bottom_image = compose_manual_print(
+            text="",
+            image_path=None,
+            text_items=[{**base_item, "vertical_align": "bottom"}],
+            printed_at=datetime(2026, 6, 12, 12, 0, 0),
+            config=_layout_config(),
+            border_style="none",
+            label_width_px=344,
+            label_height_px=180,
+        )
+
+        top_bounds = _dark_bounds(top_image, (36, 36, 156, 156))
+        bottom_bounds = _dark_bounds(bottom_image, (36, 36, 156, 156))
+        self.assertIsNotNone(top_bounds)
+        self.assertIsNotNone(bottom_bounds)
+        assert top_bounds is not None
+        assert bottom_bounds is not None
+        self.assertLess(top_bounds[1], bottom_bounds[1])
+
     def test_compose_ticket_centers_title_and_tag_below_image_with_text_box(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             asset_path = Path(tmp) / "asset.png"
@@ -413,6 +489,25 @@ def _bbox_for_rows(image: Image.Image, rows: tuple[int, int]) -> tuple[int, int,
 
 def _bbox_center_x(bbox: tuple[int, int, int, int]) -> float:
     return (bbox[0] + bbox[2]) / 2
+
+
+def _dark_bounds(
+    image: Image.Image,
+    region: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    left, top, right, bottom = region
+    pixels = image.load()
+    points = [
+        (x, y)
+        for y in range(top, min(bottom, image.height))
+        for x in range(left, min(right, image.width))
+        if pixels[x, y] < 245
+    ]
+    if not points:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 if __name__ == "__main__":

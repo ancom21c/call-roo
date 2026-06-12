@@ -36,6 +36,10 @@ MANUAL_IMAGE_SCALE_MIN = 25
 MANUAL_IMAGE_SCALE_MAX = 300
 MANUAL_IMAGE_ROTATION_MIN = -180
 MANUAL_IMAGE_ROTATION_MAX = 180
+MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
+MANUAL_TEXT_VERTICAL_ALIGNS = {"top", "center", "bottom"}
+MANUAL_FONT_SIZE_MIN = 16
+MANUAL_FONT_SIZE_MAX = 56
 
 
 class FortunePrinterService:
@@ -355,7 +359,12 @@ class FortunePrinterService:
         )
         text_align = _manual_choice(
             payload.get("text_align"),
-            allowed={"left", "center", "right"},
+            allowed=MANUAL_TEXT_ALIGNS,
+            default="center",
+        )
+        text_vertical_align = _manual_choice(
+            payload.get("text_vertical_align") or payload.get("vertical_align"),
+            allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
             default="center",
         )
         font_size = _manual_int(payload.get("font_size"), default=self.config.layout.body_font_size)
@@ -462,13 +471,82 @@ class FortunePrinterService:
                 image_path.read_bytes(),
             )
 
+        raw_text_items = payload.get("text_items")
+        if raw_text_items is not None and not isinstance(raw_text_items, list):
+            raise ValueError("manual text items must be a list")
+        job_text_items: list[dict[str, object]] = []
+        if isinstance(raw_text_items, list) and raw_text_items:
+            for index, item in enumerate(raw_text_items):
+                if not isinstance(item, dict):
+                    raise ValueError("manual text item must be an object")
+                item_text = sanitize_text(
+                    item.get("text") if isinstance(item.get("text"), str) else "",
+                    max_chars=MANUAL_PRINT_MAX_TEXT_CHARS,
+                )
+                if not item_text:
+                    continue
+                item_width = _manual_number_range(
+                    item.get("width"),
+                    default=max(1, label_width_px - 32),
+                    minimum=1,
+                    maximum=max(1, label_width_px * 2),
+                )
+                item_height = _manual_number_range(
+                    item.get("height"),
+                    default=max(1, label_height_px - 32),
+                    minimum=1,
+                    maximum=max(1, label_height_px * 2),
+                )
+                item_align = _manual_choice(
+                    item.get("text_align"),
+                    allowed=MANUAL_TEXT_ALIGNS,
+                    default=text_align,
+                )
+                item_vertical_align = _manual_choice(
+                    item.get("vertical_align"),
+                    allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
+                    default=text_vertical_align,
+                )
+                job_text_items.append(
+                    {
+                        "id": str(item.get("id") or f"text-{index + 1}"),
+                        "text": item_text,
+                        "x": _manual_number_range(
+                            item.get("x"),
+                            default=0,
+                            minimum=-label_width_px,
+                            maximum=label_width_px,
+                        ),
+                        "y": _manual_number_range(
+                            item.get("y"),
+                            default=0,
+                            minimum=-label_height_px,
+                            maximum=label_height_px,
+                        ),
+                        "width": item_width,
+                        "height": item_height,
+                        "font_size": _manual_number_range(
+                            item.get("font_size"),
+                            default=font_size,
+                            minimum=MANUAL_FONT_SIZE_MIN,
+                            maximum=MANUAL_FONT_SIZE_MAX,
+                        ),
+                        "text_align": item_align,
+                        "vertical_align": item_vertical_align,
+                    }
+                )
+
         LOGGER.info("Composing manual print in %s", job.root)
+        summary_text = text or "\n".join(
+            str(item.get("text", "")) for item in job_text_items if item.get("text")
+        )
         job.write_json(
             "manual-print.json",
             {
                 "text": text,
                 "border_style": border_style,
                 "text_align": text_align,
+                "text_vertical_align": text_vertical_align,
                 "font_size": font_size,
                 "label_width_px": label_width_px,
                 "label_height_px": label_height_px,
@@ -479,9 +557,10 @@ class FortunePrinterService:
                 "source_image_path": str(image_path or ""),
                 "image_name": str(payload.get("image_name", "")),
                 "images": _manual_image_items_for_json(job_image_items),
+                "text_items": _manual_text_items_for_json(job_text_items),
             },
         )
-        job.write_text("fortune.txt", (text or "수동 이미지 출력") + "\n")
+        job.write_text("fortune.txt", (summary_text or "수동 이미지 출력") + "\n")
         if job_image_path is not None:
             job.write_json(
                 "selected-asset.json",
@@ -496,10 +575,12 @@ class FortunePrinterService:
             text=text,
             image_path=job_image_path,
             image_items=job_image_items,
+            text_items=job_text_items,
             printed_at=triggered_at,
             config=self.config.layout,
             border_style=border_style,
             text_align=text_align,
+            text_vertical_align=text_vertical_align,
             font_size=font_size,
             label_width_px=label_width_px,
             label_height_px=label_height_px,
@@ -541,6 +622,7 @@ class FortunePrinterService:
                 "manual_print": True,
                 "manual_border_style": border_style,
                 "manual_text_align": text_align,
+                "manual_text_vertical_align": text_vertical_align,
                 "manual_font_size": font_size,
                 "manual_label_width_px": label_width_px,
                 "manual_label_height_px": label_height_px,
@@ -548,6 +630,7 @@ class FortunePrinterService:
                 "manual_image_crop": image_crop,
                 "manual_image_rotation_degrees": image_rotation_degrees,
                 "manual_image_count": len(job_image_items) if job_image_items else (1 if job_image_path else 0),
+                "manual_text_count": len(job_text_items) if job_text_items else (1 if text else 0),
                 "dry_run": self.dry_run,
             },
             play_completion_sound,
@@ -1156,6 +1239,25 @@ def _manual_image_items_for_json(
             "crop": bool(item.get("crop", False)),
         }
         for item in image_items
+    ]
+
+
+def _manual_text_items_for_json(
+    text_items: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": str(item.get("id", "")),
+            "text": str(item.get("text", "")),
+            "x": int(item.get("x", 0)),
+            "y": int(item.get("y", 0)),
+            "width": int(item.get("width", 1)),
+            "height": int(item.get("height", 1)),
+            "font_size": int(item.get("font_size", 28)),
+            "text_align": str(item.get("text_align", "center")),
+            "vertical_align": str(item.get("vertical_align", "center")),
+        }
+        for item in text_items
     ]
 
 

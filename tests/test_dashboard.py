@@ -766,6 +766,59 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             history_payload = json.loads((history_dir / "manual-print.json").read_text(encoding="utf-8"))
             self.assertEqual(len(history_payload["images"]), 2)
 
+    def test_queue_manual_print_saves_multiple_positioned_text_boxes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_config(root)
+
+            result = _queue_manual_print(
+                config,
+                {
+                    "text": "첫 줄\n둘째",
+                    "label_width_px": 240,
+                    "label_height_px": 160,
+                    "text_align": "right",
+                    "text_vertical_align": "bottom",
+                    "text_items": [
+                        {
+                            "id": "title",
+                            "text": "제목",
+                            "x": 8,
+                            "y": 10,
+                            "width": 120,
+                            "height": 48,
+                            "font_size": 32,
+                            "text_align": "center",
+                            "vertical_align": "top",
+                        },
+                        {
+                            "id": "caption",
+                            "text": "하단",
+                            "x": 90,
+                            "y": 90,
+                            "width": 100,
+                            "height": 52,
+                            "font_size": 24,
+                            "text_align": "right",
+                            "vertical_align": "bottom",
+                        },
+                    ],
+                },
+            )
+
+            self.assertEqual(result["text_count"], 2)
+            trigger_path = config.output.outputs_dir / "dashboard-triggers.jsonl"
+            payload = json.loads(trigger_path.read_text(encoding="utf-8").strip())
+            manual = payload["manual_print"]
+            self.assertEqual(manual["text_vertical_align"], "bottom")
+            self.assertEqual(len(manual["text_items"]), 2)
+            self.assertEqual(manual["text_items"][0]["text"], "제목")
+            self.assertEqual(manual["text_items"][0]["vertical_align"], "top")
+            history_dir = config.output.outputs_dir / "manual-history" / result["request_id"]
+            history_payload = json.loads((history_dir / "manual-print.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(history_payload["text_items"]), 2)
+            self.assertTrue((history_dir / "composed-ticket.png").is_file())
+
     def test_queue_rest_text_print_accepts_label_and_border_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -779,6 +832,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
                     "label_height": "92",
                     "border": "double",
                     "align": "right",
+                    "vertical_align": "bottom",
                     "font_size": "30",
                 },
             )
@@ -792,6 +846,7 @@ class DashboardSnapshotBuilderTest(unittest.TestCase):
             self.assertEqual(manual["label_height_px"], 92)
             self.assertEqual(manual["border_style"], "double")
             self.assertEqual(manual["text_align"], "right")
+            self.assertEqual(manual["text_vertical_align"], "bottom")
             self.assertEqual(manual["font_size"], 30)
 
     def test_queue_rest_image_print_accepts_file_payload_and_params(self) -> None:

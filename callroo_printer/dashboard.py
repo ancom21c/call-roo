@@ -48,6 +48,7 @@ MANUAL_UPLOADS_DIRNAME = "manual-uploads"
 MANUAL_HISTORY_DIRNAME = "manual-history"
 MANUAL_BORDER_STYLES = {"none", "thin", "thick", "double"}
 MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
+MANUAL_TEXT_VERTICAL_ALIGNS = {"top", "center", "bottom"}
 MANUAL_FONT_SIZE_MIN = 16
 MANUAL_FONT_SIZE_MAX = 56
 MANUAL_LABEL_WIDTH_MIN = 80
@@ -2355,6 +2356,13 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       z-index: 1;
     }
 
+    .canvas-text-layer {
+      position: absolute;
+      inset: 16px;
+      overflow: hidden;
+      z-index: 2;
+    }
+
     .canvas-image-item {
       position: absolute;
       border: 1px solid transparent;
@@ -2401,6 +2409,84 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
     }
 
     .canvas-image-item.selected .canvas-image-handle {
+      display: block;
+    }
+
+    .canvas-text-item {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      padding: 0;
+      border: 1px solid transparent;
+      color: #111;
+      font-weight: 700;
+      line-height: 1.35;
+      white-space: pre-line;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+      overflow: hidden;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .canvas-text-item.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(182, 73, 38, 0.14);
+      z-index: 4;
+    }
+
+    .canvas-text-item:active {
+      cursor: grabbing;
+    }
+
+    .canvas-text-content {
+      width: 100%;
+    }
+
+    .canvas-text-item.align-left {
+      text-align: left;
+      align-items: flex-start;
+    }
+
+    .canvas-text-item.align-center {
+      text-align: center;
+      align-items: center;
+    }
+
+    .canvas-text-item.align-right {
+      text-align: right;
+      align-items: flex-end;
+    }
+
+    .canvas-text-item.valign-top {
+      justify-content: flex-start;
+    }
+
+    .canvas-text-item.valign-center {
+      justify-content: center;
+    }
+
+    .canvas-text-item.valign-bottom {
+      justify-content: flex-end;
+    }
+
+    .canvas-text-handle {
+      position: absolute;
+      right: -9px;
+      bottom: -9px;
+      display: none;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #fffdf8;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 4px 12px rgba(38, 25, 14, 0.22);
+      cursor: nwse-resize;
+      touch-action: none;
+    }
+
+    .canvas-text-item.selected .canvas-text-handle {
       display: block;
     }
 
@@ -2650,6 +2736,14 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
         <label class="field">문구
           <textarea id="manual-text" maxlength="1200" placeholder="출력할 문구를 입력하세요."></textarea>
         </label>
+        <div class="image-tools">
+          <div id="selected-text-status" class="status">문구를 입력하거나 텍스트 박스를 추가하세요.</div>
+          <div class="image-tool-actions">
+            <button id="add-text-box" type="button" class="secondary">텍스트 박스 추가</button>
+            <button id="remove-selected-text" type="button" class="secondary">선택 텍스트 삭제</button>
+          </div>
+        </div>
+        <div id="text-list" class="image-list"></div>
         <div class="file-drop">
           <label class="field">그림 파일
             <input id="manual-image" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple>
@@ -2674,11 +2768,18 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
               <option value="none">테두리 없음</option>
             </select>
           </label>
-          <label class="field">정렬
+          <label class="field">가로 정렬
             <select id="text-align">
               <option value="center">가운데</option>
               <option value="left">왼쪽</option>
               <option value="right">오른쪽</option>
+            </select>
+          </label>
+          <label class="field">세로 정렬
+            <select id="text-vertical-align">
+              <option value="center">가운데</option>
+              <option value="top">위</option>
+              <option value="bottom">아래</option>
             </select>
           </label>
           <label class="field">글자 크기
@@ -2686,6 +2787,20 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
               <input id="font-size" type="range" min="16" max="56" value="28">
               <span id="font-size-value" class="range-value">28px</span>
             </div>
+          </label>
+        </div>
+        <div id="text-geometry-controls" class="image-geometry-grid">
+          <label class="field">텍스트 X (dot)
+            <input id="text-x" type="number" step="1" value="0">
+          </label>
+          <label class="field">텍스트 Y (dot)
+            <input id="text-y" type="number" step="1" value="0">
+          </label>
+          <label class="field">텍스트 폭 (dot)
+            <input id="text-width" type="number" min="8" step="1" value="0">
+          </label>
+          <label class="field">텍스트 높이 (dot)
+            <input id="text-height" type="number" min="8" step="1" value="0">
           </label>
         </div>
         <div class="form-grid">
@@ -2746,7 +2861,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
         <div class="paper-shell">
           <div id="paper-preview" class="paper-preview border-thin">
             <div id="canvas-image-layer" class="canvas-image-layer"></div>
-            <div id="manual-preview-text" class="manual-preview-text"></div>
+            <div id="canvas-text-layer" class="canvas-text-layer"></div>
             <div id="label-resize-handle" class="label-resize-handle" title="라벨 크기 조절" aria-label="라벨 크기 조절"></div>
           </div>
         </div>
@@ -2769,12 +2884,17 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
     const paperPadding = 16;
     const minImageSize = 8;
     const minVisibleImageDots = 8;
+    const minTextSize = 8;
+    const minVisibleTextDots = 8;
     const state = {
       images: [],
       selectedImageId: "",
+      texts: [],
+      selectedTextId: "",
       history: [],
       drag: null,
       nextImageIndex: 1,
+      nextTextIndex: 1,
     };
 
     function clampNumber(value, min, max, fallback) {
@@ -2785,12 +2905,21 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       return Math.max(min, Math.min(max, Math.round(parsed)));
     }
 
+    function snapNumber(value, step = 4) {
+      return Math.round(Number(value) / step) * step;
+    }
+
+    function clampSteppedNumber(value, min, max, fallback, step = 4) {
+      return clampNumber(snapNumber(value, step), min, max, fallback);
+    }
+
     function readManualOptions() {
       return {
         labelWidth: clampNumber(document.getElementById("label-width").value, 80, 344, 344),
         labelHeight: clampNumber(document.getElementById("label-height").value, 56, 1200, 220),
         borderStyle: document.getElementById("border-style").value,
         textAlign: document.getElementById("text-align").value,
+        textVerticalAlign: document.getElementById("text-vertical-align").value,
         fontSize: clampNumber(document.getElementById("font-size").value, 16, 56, 28),
         imageScale: clampNumber(document.getElementById("image-scale").value, 25, 300, 100),
         imageRotation: clampNumber(document.getElementById("image-rotation").value, -180, 180, 0),
@@ -2811,7 +2940,151 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
     function selectImage(imageId) {
       state.selectedImageId = state.images.some((item) => item.id === imageId) ? imageId : "";
+      if (state.selectedImageId) {
+        state.selectedTextId = "";
+      }
+      syncManualTextEditor();
       renderPreview();
+    }
+
+    function selectedText() {
+      return state.texts.find((item) => item.id === state.selectedTextId) || null;
+    }
+
+    function selectText(textId) {
+      state.selectedTextId = state.texts.some((item) => item.id === textId) ? textId : "";
+      if (state.selectedTextId) {
+        state.selectedImageId = "";
+      }
+      syncManualTextEditor();
+      renderPreview();
+    }
+
+    function setTextStatus(message) {
+      document.getElementById("selected-text-status").textContent = message;
+    }
+
+    function textBounds(item, options = readManualOptions()) {
+      const box = contentBox(options);
+      const width = clampNumber(item.width, minTextSize, Math.max(minTextSize, box.width * 2), box.width);
+      const height = clampNumber(item.height, minTextSize, Math.max(minTextSize, box.height * 2), Math.min(96, box.height));
+      return {
+        minWidth: minTextSize,
+        maxWidth: Math.max(minTextSize, box.width * 2),
+        minHeight: minTextSize,
+        maxHeight: Math.max(minTextSize, box.height * 2),
+        minX: Math.min(0, -width + minVisibleTextDots),
+        maxX: Math.max(0, box.width - minVisibleTextDots),
+        minY: Math.min(0, -height + minVisibleTextDots),
+        maxY: Math.max(0, box.height - minVisibleTextDots),
+      };
+    }
+
+    function clampTextItem(item, options = readManualOptions()) {
+      const before = {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
+        fontSize: item.font_size,
+      };
+      const boundsBefore = textBounds(item, options);
+      item.width = clampNumber(item.width, boundsBefore.minWidth, boundsBefore.maxWidth, Math.max(1, contentBox(options).width));
+      item.height = clampNumber(item.height, boundsBefore.minHeight, boundsBefore.maxHeight, Math.min(96, contentBox(options).height));
+      const boundsAfter = textBounds(item, options);
+      item.x = clampNumber(item.x, boundsAfter.minX, boundsAfter.maxX, 0);
+      item.y = clampNumber(item.y, boundsAfter.minY, boundsAfter.maxY, 0);
+      item.font_size = clampNumber(item.font_size, 16, 56, readManualOptions().fontSize);
+      if (!["left", "center", "right"].includes(item.text_align)) {
+        item.text_align = readManualOptions().textAlign;
+      }
+      if (!["top", "center", "bottom"].includes(item.vertical_align)) {
+        item.vertical_align = readManualOptions().textVerticalAlign;
+      }
+      return (
+        before.x !== item.x ||
+        before.y !== item.y ||
+        before.width !== item.width ||
+        before.height !== item.height ||
+        before.fontSize !== item.font_size
+      );
+    }
+
+    function textGeometryInputs() {
+      return {
+        x: document.getElementById("text-x"),
+        y: document.getElementById("text-y"),
+        width: document.getElementById("text-width"),
+        height: document.getElementById("text-height"),
+      };
+    }
+
+    function syncTextGeometryControls(item, options = readManualOptions()) {
+      const inputs = textGeometryInputs();
+      Object.values(inputs).forEach((input) => {
+        input.disabled = !item;
+      });
+      if (!item) {
+        inputs.x.value = 0;
+        inputs.y.value = 0;
+        inputs.width.value = 0;
+        inputs.height.value = 0;
+        return;
+      }
+      const bounds = textBounds(item, options);
+      inputs.x.min = bounds.minX;
+      inputs.x.max = bounds.maxX;
+      inputs.y.min = bounds.minY;
+      inputs.y.max = bounds.maxY;
+      inputs.width.min = bounds.minWidth;
+      inputs.width.max = bounds.maxWidth;
+      inputs.height.min = bounds.minHeight;
+      inputs.height.max = bounds.maxHeight;
+      inputs.x.value = item.x;
+      inputs.y.value = item.y;
+      inputs.width.value = item.width;
+      inputs.height.value = item.height;
+    }
+
+    function createTextItem(text = "") {
+      const options = readManualOptions();
+      const box = contentBox(options);
+      const width = Math.max(80, Math.min(box.width, 180));
+      const height = Math.max(48, Math.min(box.height, 88));
+      const stagger = (state.texts.length % 5) * 14;
+      const item = {
+        id: `text-${Date.now().toString(36)}-${state.nextTextIndex++}`,
+        text: text || "",
+        x: Math.max(0, Math.min(Math.max(0, box.width - width), 12 + stagger)),
+        y: Math.max(0, Math.min(Math.max(0, box.height - height), 12 + stagger)),
+        width,
+        height,
+        font_size: options.fontSize,
+        text_align: options.textAlign,
+        vertical_align: options.textVerticalAlign,
+      };
+      clampTextItem(item, options);
+      return item;
+    }
+
+    function ensureSelectedTextItem() {
+      let item = selectedText();
+      if (item) {
+        return item;
+      }
+      item = createTextItem("");
+      state.texts.push(item);
+      state.selectedTextId = item.id;
+      state.selectedImageId = "";
+      return item;
+    }
+
+    function syncManualTextEditor() {
+      const textarea = document.getElementById("manual-text");
+      const selected = selectedText();
+      if (document.activeElement !== textarea) {
+        textarea.value = selected ? selected.text : "";
+      }
     }
 
     function validateImageFile(file) {
@@ -3041,6 +3314,53 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       });
     }
 
+    function createCanvasTextElement(item) {
+      const element = document.createElement("div");
+      element.className = "canvas-text-item";
+      element.dataset.textId = item.id;
+      const content = document.createElement("div");
+      content.className = "canvas-text-content";
+      const resizeHandle = document.createElement("span");
+      resizeHandle.className = "canvas-text-handle";
+      resizeHandle.dataset.textHandle = "resize";
+      resizeHandle.title = "텍스트 박스 크기 조절";
+      element.append(content, resizeHandle);
+      return element;
+    }
+
+    function renderCanvasTexts(textLayer, options) {
+      const elementsById = new Map(
+        Array.from(textLayer.querySelectorAll(".canvas-text-item")).map((element) => [
+          element.dataset.textId,
+          element,
+        ])
+      );
+      const activeIds = new Set();
+      state.texts.forEach((item) => {
+        clampTextItem(item, options);
+        if (!item.text.trim()) {
+          return;
+        }
+        activeIds.add(item.id);
+        const element = elementsById.get(item.id) || createCanvasTextElement(item);
+        if (!element.parentElement) {
+          textLayer.append(element);
+        }
+        element.className = `canvas-text-item ${item.id === state.selectedTextId ? "selected" : ""} align-${item.text_align} valign-${item.vertical_align}`;
+        element.style.left = `${item.x}px`;
+        element.style.top = `${item.y}px`;
+        element.style.width = `${item.width}px`;
+        element.style.height = `${item.height}px`;
+        element.style.fontSize = `${item.font_size}px`;
+        element.querySelector(".canvas-text-content").textContent = item.text;
+      });
+      elementsById.forEach((element, textId) => {
+        if (!activeIds.has(textId)) {
+          element.remove();
+        }
+      });
+    }
+
     function renderImageList() {
       const list = document.getElementById("image-list");
       if (!state.images.length) {
@@ -3054,12 +3374,25 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       `).join("");
     }
 
+    function renderTextList() {
+      const list = document.getElementById("text-list");
+      const visibleTexts = state.texts.filter((item) => item.text.trim());
+      if (!visibleTexts.length) {
+        list.innerHTML = '<span class="status">텍스트 박스 없음</span>';
+        return;
+      }
+      list.innerHTML = visibleTexts.map((item, index) => `
+        <button type="button" class="image-chip ${item.id === state.selectedTextId ? "selected" : ""}" data-select-text="${escapeHtml(item.id)}">
+          ${escapeHtml(index + 1)}. ${escapeHtml(item.text.slice(0, 24))}
+        </button>
+      `).join("");
+    }
+
     function renderPreview() {
-      const text = document.getElementById("manual-text").value.trim();
       const options = readManualOptions();
       const paper = document.getElementById("paper-preview");
       const imageLayer = document.getElementById("canvas-image-layer");
-      const previewText = document.getElementById("manual-preview-text");
+      const textLayer = document.getElementById("canvas-text-layer");
       const fontLabel = document.getElementById("font-size-value");
       const imageScale = document.getElementById("image-scale");
       const imageScaleLabel = document.getElementById("image-scale-value");
@@ -3069,16 +3402,36 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       const fitButton = document.getElementById("fit-selected-image");
       const removeButton = document.getElementById("remove-selected-image");
       const selected = selectedImage();
+      const selectedTextItem = selectedText();
+      const textAlign = document.getElementById("text-align");
+      const textVerticalAlign = document.getElementById("text-vertical-align");
+      const fontSize = document.getElementById("font-size");
+      const removeTextButton = document.getElementById("remove-selected-text");
 
       paper.className = `paper-preview border-${options.borderStyle}`;
       paper.style.width = `${options.labelWidth}px`;
       paper.style.height = `${options.labelHeight}px`;
       paper.style.minHeight = `${options.labelHeight}px`;
       renderCanvasImages(imageLayer, options);
-      previewText.textContent = text;
-      previewText.className = `manual-preview-text ${text ? "visible" : ""} align-${options.textAlign}`;
-      previewText.style.fontSize = `${options.fontSize}px`;
-      fontLabel.textContent = `${options.fontSize}px`;
+      renderCanvasTexts(textLayer, options);
+
+      textAlign.disabled = !selectedTextItem;
+      textVerticalAlign.disabled = !selectedTextItem;
+      fontSize.disabled = !selectedTextItem;
+      removeTextButton.disabled = !selectedTextItem;
+      if (selectedTextItem) {
+        textAlign.value = selectedTextItem.text_align;
+        textVerticalAlign.value = selectedTextItem.vertical_align;
+        fontSize.value = selectedTextItem.font_size;
+        fontLabel.textContent = `${selectedTextItem.font_size}px`;
+        setTextStatus(`${selectedTextItem.width}×${selectedTextItem.height}dot · x${selectedTextItem.x}, y${selectedTextItem.y}`);
+      } else {
+        textAlign.value = options.textAlign;
+        textVerticalAlign.value = options.textVerticalAlign;
+        fontSize.value = options.fontSize;
+        fontLabel.textContent = "—";
+        setTextStatus("문구를 입력하거나 텍스트 박스를 추가하세요.");
+      }
 
       imageScale.disabled = !selected;
       imageRotation.disabled = !selected;
@@ -3101,19 +3454,25 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
         setImageStatus("그림을 올리면 캔버스에서 이동·크기조절·회전할 수 있습니다.");
       }
       syncImageGeometryControls(selected, options);
+      syncTextGeometryControls(selectedTextItem, options);
 
       document.getElementById("label-width").value = options.labelWidth;
       document.getElementById("label-height").value = options.labelHeight;
       renderImageList();
+      renderTextList();
 
       const pieces = [];
       pieces.push(`후보 폭 384dot 고정`);
       pieces.push(`${options.labelWidth}×${options.labelHeight}dot 라벨`);
-      if (text) {
-        pieces.push(`${text.length}자`);
+      const textLength = state.texts.reduce((sum, item) => sum + item.text.trim().length, 0);
+      if (textLength) {
+        pieces.push(`${textLength}자`);
       }
       if (state.images.length) {
         pieces.push(`${state.images.length}개 그림`);
+      }
+      if (state.texts.some((item) => item.text.trim())) {
+        pieces.push(`${state.texts.filter((item) => item.text.trim()).length}개 텍스트`);
       }
       document.getElementById("preview-meta").textContent = pieces.join(" · ");
     }
@@ -3213,6 +3572,89 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       renderPreview();
     }
 
+    function handleManualTextInput() {
+      const textarea = document.getElementById("manual-text");
+      const value = textarea.value;
+      let item = selectedText();
+      if (!item && value.trim()) {
+        item = ensureSelectedTextItem();
+      }
+      if (item) {
+        item.text = value;
+      }
+      renderPreview();
+    }
+
+    function addTextBox() {
+      const textarea = document.getElementById("manual-text");
+      const item = createTextItem(textarea.value.trim() || "텍스트");
+      state.texts.push(item);
+      state.selectedTextId = item.id;
+      state.selectedImageId = "";
+      syncManualTextEditor();
+      setTextStatus("텍스트 박스를 추가했습니다.");
+      renderPreview();
+    }
+
+    function removeSelectedText() {
+      const item = selectedText();
+      if (!item) {
+        return;
+      }
+      state.texts = state.texts.filter((candidate) => candidate.id !== item.id);
+      state.selectedTextId = state.texts.length ? state.texts[state.texts.length - 1].id : "";
+      syncManualTextEditor();
+      setTextStatus("선택한 텍스트 박스를 제거했습니다.");
+      renderPreview();
+    }
+
+    function applySelectedTextStyle() {
+      const item = selectedText();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      item.text_align = document.getElementById("text-align").value;
+      item.vertical_align = document.getElementById("text-vertical-align").value;
+      item.font_size = clampNumber(document.getElementById("font-size").value, 16, 56, item.font_size);
+      renderPreview();
+    }
+
+    function applySelectedTextGeometry(event) {
+      const item = selectedText();
+      if (!item) {
+        renderPreview();
+        return;
+      }
+      const inputs = textGeometryInputs();
+      const previous = {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
+      };
+      item.x = Number(inputs.x.value);
+      item.y = Number(inputs.y.value);
+      item.width = Number(inputs.width.value);
+      item.height = Number(inputs.height.value);
+      if (event?.target === inputs.width || event?.target === inputs.height) {
+        item.width = clampSteppedNumber(item.width, minTextSize, textBounds(item).maxWidth, previous.width);
+        item.height = clampSteppedNumber(item.height, minTextSize, textBounds(item).maxHeight, previous.height);
+      }
+      const corrected = clampTextItem(item);
+      if (corrected) {
+        setStatus("텍스트 위치/크기를 유효한 dot 범위로 자동 보정했습니다.");
+      } else if (
+        previous.x !== item.x ||
+        previous.y !== item.y ||
+        previous.width !== item.width ||
+        previous.height !== item.height
+      ) {
+        setStatus("텍스트 위치/크기를 적용했습니다.");
+      }
+      renderPreview();
+    }
+
     function fitSelectedImageToLabel() {
       const item = selectedImage();
       if (!item) {
@@ -3261,16 +3703,48 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
     }
 
     function handleCanvasPointerDown(event) {
+      const textElement = event.target.closest(".canvas-text-item");
+      if (textElement) {
+        const textId = textElement.dataset.textId || "";
+        state.selectedTextId = textId;
+        state.selectedImageId = "";
+        syncManualTextEditor();
+        const item = selectedText();
+        if (!item) {
+          return;
+        }
+        const handle = event.target.closest("[data-text-handle]");
+        const mode = handle?.dataset.textHandle === "resize" ? "text-resize" : "text-move";
+        state.drag = {
+          mode,
+          id: textId,
+          pointerId: event.pointerId,
+          startClientX: event.clientX,
+          startClientY: event.clientY,
+          startX: item.x,
+          startY: item.y,
+          startWidth: item.width,
+          startHeight: item.height,
+        };
+        event.preventDefault();
+        renderPreview();
+        return;
+      }
+
       const imageElement = event.target.closest(".canvas-image-item");
       if (!imageElement) {
-        if (event.target.id === "paper-preview" || event.target.id === "canvas-image-layer") {
+        if (event.target.id === "paper-preview" || event.target.id === "canvas-image-layer" || event.target.id === "canvas-text-layer") {
           state.selectedImageId = "";
+          state.selectedTextId = "";
+          syncManualTextEditor();
           renderPreview();
         }
         return;
       }
       const imageId = imageElement.dataset.imageId || "";
       state.selectedImageId = imageId;
+      state.selectedTextId = "";
+      syncManualTextEditor();
       const item = selectedImage();
       if (!item) {
         return;
@@ -3314,8 +3788,25 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       const dx = event.clientX - drag.startClientX;
       const dy = event.clientY - drag.startClientY;
       if (drag.mode === "label-resize") {
-        document.getElementById("label-width").value = clampNumber(drag.startWidth + dx, 80, 344, drag.startWidth);
-        document.getElementById("label-height").value = clampNumber(drag.startHeight + dy, 56, 1200, drag.startHeight);
+        document.getElementById("label-width").value = clampSteppedNumber(drag.startWidth + dx, 80, 344, drag.startWidth);
+        document.getElementById("label-height").value = clampSteppedNumber(drag.startHeight + dy, 56, 1200, drag.startHeight);
+        renderPreview();
+        return;
+      }
+
+      if (drag.mode === "text-move" || drag.mode === "text-resize") {
+        const item = state.texts.find((candidate) => candidate.id === drag.id);
+        if (!item) {
+          state.drag = null;
+          return;
+        }
+        if (drag.mode === "text-move") {
+          item.x = Math.round(drag.startX + dx);
+          item.y = Math.round(drag.startY + dy);
+        } else {
+          item.width = Math.max(minTextSize, clampSteppedNumber(drag.startWidth + dx, minTextSize, textBounds(item).maxWidth, drag.startWidth));
+          item.height = Math.max(minTextSize, clampSteppedNumber(drag.startHeight + dy, minTextSize, textBounds(item).maxHeight, drag.startHeight));
+        }
         renderPreview();
         return;
       }
@@ -3332,8 +3823,8 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
         const widthScale = Math.max(0.1, (drag.startWidth + dx) / Math.max(1, drag.startWidth));
         const heightScale = Math.max(0.1, (drag.startHeight + dy) / Math.max(1, drag.startHeight));
         const scale = Math.max(widthScale, heightScale);
-        item.width = Math.max(8, Math.round(drag.startWidth * scale));
-        item.height = Math.max(8, Math.round(drag.startHeight * scale));
+        item.width = Math.max(8, snapNumber(drag.startWidth * scale, 4));
+        item.height = Math.max(8, snapNumber(drag.startHeight * scale, 4));
         item.baseWidth = item.width;
         item.baseHeight = item.height;
         item.scale = 100;
@@ -3350,8 +3841,11 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
     async function submitManualPrint(event) {
       event.preventDefault();
-      const text = document.getElementById("manual-text").value.trim();
-      if (!text && !state.images.length) {
+      const textItems = state.texts
+        .map((item) => ({ ...item, text: item.text.trim() }))
+        .filter((item) => item.text);
+      const text = textItems.map((item) => item.text).join("\\n").trim();
+      if (!textItems.length && !state.images.length) {
         setStatus("문구나 그림 중 하나를 넣어주세요.", true);
         return;
       }
@@ -3381,6 +3875,7 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
           text,
           border_style: options.borderStyle,
           text_align: options.textAlign,
+          text_vertical_align: options.textVerticalAlign,
           font_size: options.fontSize,
           label_width_px: options.labelWidth,
           label_height_px: options.labelHeight,
@@ -3388,6 +3883,17 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
           image_crop: options.imageCrop,
           image_rotation_degrees: options.imageRotation,
           images,
+          text_items: textItems.map((item) => ({
+            id: item.id,
+            text: item.text,
+            x: item.x,
+            y: item.y,
+            width: item.width,
+            height: item.height,
+            font_size: item.font_size,
+            text_align: item.text_align,
+            vertical_align: item.vertical_align,
+          })),
         };
 
         const response = await fetch("/api/manual-print", {
@@ -3413,8 +3919,11 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
       revokeAllImagePreviewUrls();
       state.images = [];
       state.selectedImageId = "";
+      state.texts = [];
+      state.selectedTextId = "";
       state.drag = null;
       state.nextImageIndex = 1;
+      state.nextTextIndex = 1;
       setStatus("문구나 그림 중 하나를 넣으면 출력할 수 있습니다.");
       renderPreview();
     }
@@ -3581,19 +4090,31 @@ _PRINTER_DASHBOARD_HTML = """<!doctype html>
 
     document.getElementById("manual-form").addEventListener("submit", submitManualPrint);
     document.getElementById("clear-manual").addEventListener("click", clearManualForm);
-    document.getElementById("manual-text").addEventListener("input", renderPreview);
+    document.getElementById("manual-text").addEventListener("input", handleManualTextInput);
     document.getElementById("label-width").addEventListener("input", renderPreview);
     document.getElementById("label-height").addEventListener("input", renderPreview);
     document.getElementById("border-style").addEventListener("change", renderPreview);
-    document.getElementById("text-align").addEventListener("change", renderPreview);
-    document.getElementById("font-size").addEventListener("input", renderPreview);
+    document.getElementById("text-align").addEventListener("change", applySelectedTextStyle);
+    document.getElementById("text-vertical-align").addEventListener("change", applySelectedTextStyle);
+    document.getElementById("font-size").addEventListener("input", applySelectedTextStyle);
     document.getElementById("image-scale").addEventListener("input", applySelectedImageScale);
     document.getElementById("image-rotation").addEventListener("input", applySelectedImageRotation);
     document.getElementById("image-crop").addEventListener("change", applySelectedImageCrop);
     Object.values(imageGeometryInputs()).forEach((input) => {
       input.addEventListener("change", applySelectedImageGeometry);
     });
+    Object.values(textGeometryInputs()).forEach((input) => {
+      input.addEventListener("change", applySelectedTextGeometry);
+    });
     document.getElementById("manual-image").addEventListener("change", handleImageChange);
+    document.getElementById("add-text-box").addEventListener("click", addTextBox);
+    document.getElementById("remove-selected-text").addEventListener("click", removeSelectedText);
+    document.getElementById("text-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-select-text]");
+      if (button) {
+        selectText(button.dataset.selectText || "");
+      }
+    });
     document.getElementById("image-list").addEventListener("click", (event) => {
       const button = event.target.closest("[data-select-image]");
       if (button) {
@@ -3795,6 +4316,12 @@ class DashboardSnapshotBuilder:
                     tz=self._local_timezone,
                 ).isoformat()
             text = _first_text(metadata.get("text")) or ""
+            text_items = metadata.get("text_items")
+            text_count = (
+                len([item for item in text_items if isinstance(item, dict) and item.get("text")])
+                if isinstance(text_items, list)
+                else (1 if text else 0)
+            )
             images = metadata.get("images")
             image_count = len(images) if isinstance(images, list) else (1 if metadata.get("image_path") else 0)
             entries.append(
@@ -3803,9 +4330,15 @@ class DashboardSnapshotBuilder:
                     "created_at": created_at or "",
                     "text": text,
                     "text_preview": text[:80],
+                    "text_count": text_count,
                     "image_name": _first_text(metadata.get("image_name")) or "",
                     "image_count": image_count,
                     "border_style": _first_text(metadata.get("border_style")) or "thin",
+                    "text_vertical_align": (
+                        _first_text(metadata.get("text_vertical_align"))
+                        or _first_text(metadata.get("vertical_align"))
+                        or "center"
+                    ),
                     "label_width_px": _optional_number(metadata.get("label_width_px")),
                     "label_height_px": _optional_number(metadata.get("label_height_px")),
                     "image_scale_percent": _optional_number(
@@ -4781,6 +5314,11 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         allowed=MANUAL_TEXT_ALIGNS,
         default="center",
     )
+    text_vertical_align = _manual_choice(
+        payload.get("text_vertical_align") or payload.get("vertical_align"),
+        allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
+        default="center",
+    )
     font_size = _manual_font_size(payload.get("font_size"), config.layout.body_font_size)
     label_width_px = _manual_label_width(payload.get("label_width_px"), config)
     label_height_px = _manual_label_height(payload.get("label_height_px"))
@@ -4804,10 +5342,18 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         label_width_px=label_width_px,
         label_height_px=label_height_px,
     )
+    text_items = _save_manual_text_items(
+        payload=payload,
+        label_width_px=label_width_px,
+        label_height_px=label_height_px,
+        font_size=font_size,
+        text_align=text_align,
+        text_vertical_align=text_vertical_align,
+    )
     image_path = Path(str(image_items[0]["path"])) if image_items else None
     image_name = ", ".join(str(item.get("filename", "")) for item in image_items if item.get("filename"))
 
-    if not text and not image_items:
+    if not text and not image_items and not text_items:
         raise ValueError("manual print requires text or image")
 
     history_metadata = {
@@ -4817,6 +5363,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         "text": text,
         "border_style": border_style,
         "text_align": text_align,
+        "text_vertical_align": text_vertical_align,
         "font_size": font_size,
         "label_width_px": label_width_px,
         "label_height_px": label_height_px,
@@ -4826,6 +5373,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         "image_path": str(image_path or ""),
         "image_name": image_name,
         "images": _serializable_image_items(image_items),
+        "text_items": _serializable_text_items(text_items),
     }
     try:
         _save_manual_history(config, request_id, history_metadata, image_path=image_path)
@@ -4844,6 +5392,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
             "text": text,
             "border_style": border_style,
             "text_align": text_align,
+            "text_vertical_align": text_vertical_align,
             "font_size": font_size,
             "label_width_px": label_width_px,
             "label_height_px": label_height_px,
@@ -4853,6 +5402,7 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
             "image_path": str(image_path or ""),
             "image_name": image_name,
             "images": _serializable_image_items(image_items),
+            "text_items": _serializable_text_items(text_items),
         },
     }
     try:
@@ -4869,7 +5419,8 @@ def _queue_manual_print(config: AppConfig, payload: dict[str, Any]) -> dict[str,
         "trigger_path": str(trigger_path),
         "has_image": bool(image_items),
         "image_count": len(image_items),
-        "text_chars": len(text),
+        "text_chars": len(text) or sum(len(str(item.get("text", ""))) for item in text_items),
+        "text_count": len(text_items) if text_items else (1 if text else 0),
         "border_style": border_style,
         "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
         "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
@@ -4898,6 +5449,11 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         allowed=MANUAL_TEXT_ALIGNS,
         default="center",
     )
+    text_vertical_align = _manual_choice(
+        metadata.get("text_vertical_align") or metadata.get("vertical_align"),
+        allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
+        default="center",
+    )
     font_size = _manual_font_size(metadata.get("font_size"), config.layout.body_font_size)
     label_width_px = _manual_label_width(metadata.get("label_width_px"), config)
     label_height_px = _manual_label_height(metadata.get("label_height_px"))
@@ -4919,6 +5475,14 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         request_id=request_id,
         metadata=metadata,
     )
+    text_items = _copy_manual_history_text_items(
+        metadata=metadata,
+        label_width_px=label_width_px,
+        label_height_px=label_height_px,
+        font_size=font_size,
+        text_align=text_align,
+        text_vertical_align=text_vertical_align,
+    )
     image_path = Path(str(image_items[0]["path"])) if image_items else legacy_image_path
     image_name = (
         ", ".join(
@@ -4930,7 +5494,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         or ""
     )
 
-    if not text and not image_path and not image_items:
+    if not text and not image_path and not image_items and not text_items:
         raise ValueError("manual history entry has no printable content")
 
     history_metadata = {
@@ -4941,6 +5505,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         "text": text,
         "border_style": border_style,
         "text_align": text_align,
+        "text_vertical_align": text_vertical_align,
         "font_size": font_size,
         "label_width_px": label_width_px,
         "label_height_px": label_height_px,
@@ -4950,6 +5515,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         "image_path": str(image_path or ""),
         "image_name": image_name,
         "images": _serializable_image_items(image_items),
+        "text_items": _serializable_text_items(text_items),
     }
     try:
         _save_manual_history(config, request_id, history_metadata, image_path=image_path)
@@ -4970,6 +5536,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
             "text": text,
             "border_style": border_style,
             "text_align": text_align,
+            "text_vertical_align": text_vertical_align,
             "font_size": font_size,
             "label_width_px": label_width_px,
             "label_height_px": label_height_px,
@@ -4979,6 +5546,7 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
             "image_path": str(image_path or ""),
             "image_name": image_name,
             "images": _serializable_image_items(image_items),
+            "text_items": _serializable_text_items(text_items),
         },
     }
     try:
@@ -4998,7 +5566,8 @@ def _queue_manual_history_reprint(config: AppConfig, history_id: str) -> dict[st
         "reprinted_from": safe_id,
         "has_image": bool(image_path or image_items),
         "image_count": len(image_items) if image_items else (1 if image_path else 0),
-        "text_chars": len(text),
+        "text_chars": len(text) or sum(len(str(item.get("text", ""))) for item in text_items),
+        "text_count": len(text_items) if text_items else (1 if text else 0),
         "border_style": border_style,
         "history_url": f"/manual-history/{quote(request_id, safe='')}/image",
         "download_url": f"/manual-history/{quote(request_id, safe='')}/image?download=1",
@@ -5030,6 +5599,14 @@ def _rest_manual_options(payload: dict[str, Any]) -> dict[str, Any]:
     _copy_first_present(options, payload, "label_height_px", "label_height_px", "label_height")
     _copy_first_present(options, payload, "border_style", "border_style", "border")
     _copy_first_present(options, payload, "text_align", "text_align", "align")
+    _copy_first_present(
+        options,
+        payload,
+        "text_vertical_align",
+        "text_vertical_align",
+        "vertical_align",
+        "valign",
+    )
     _copy_first_present(options, payload, "font_size", "font_size")
     return options
 
@@ -5229,6 +5806,75 @@ def _copy_manual_history_images(
         for path in copied_paths:
             _unlink_if_exists(path)
         raise
+
+
+def _copy_manual_history_text_items(
+    *,
+    metadata: dict[str, Any],
+    label_width_px: int,
+    label_height_px: int,
+    font_size: int,
+    text_align: str,
+    text_vertical_align: str,
+) -> list[dict[str, Any]]:
+    raw_items = metadata.get("text_items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return []
+
+    text_items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            continue
+        item_text = _manual_print_text(item.get("text"))
+        if not item_text:
+            continue
+        text_items.append(
+            {
+                "id": _optional_text(item.get("id")) or f"text-{index + 1}",
+                "text": item_text,
+                "x": _manual_number_range(
+                    item.get("x"),
+                    default=0,
+                    minimum=-label_width_px,
+                    maximum=label_width_px,
+                ),
+                "y": _manual_number_range(
+                    item.get("y"),
+                    default=0,
+                    minimum=-label_height_px,
+                    maximum=label_height_px,
+                ),
+                "width": _manual_number_range(
+                    item.get("width"),
+                    default=max(1, label_width_px - 32),
+                    minimum=8,
+                    maximum=max(8, label_width_px * 2),
+                ),
+                "height": _manual_number_range(
+                    item.get("height"),
+                    default=max(1, label_height_px - 32),
+                    minimum=8,
+                    maximum=max(8, label_height_px * 2),
+                ),
+                "font_size": _manual_number_range(
+                    item.get("font_size"),
+                    default=font_size,
+                    minimum=MANUAL_FONT_SIZE_MIN,
+                    maximum=MANUAL_FONT_SIZE_MAX,
+                ),
+                "text_align": _manual_choice(
+                    item.get("text_align"),
+                    allowed=MANUAL_TEXT_ALIGNS,
+                    default=text_align,
+                ),
+                "vertical_align": _manual_choice(
+                    item.get("vertical_align"),
+                    allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
+                    default=text_vertical_align,
+                ),
+            }
+        )
+    return text_items
 
 
 def _resolve_manual_upload_path(value: Any, outputs_dir: Path) -> Path:
@@ -5751,6 +6397,79 @@ def _save_manual_image_items(
     return image_items
 
 
+def _save_manual_text_items(
+    *,
+    payload: dict[str, Any],
+    label_width_px: int,
+    label_height_px: int,
+    font_size: int,
+    text_align: str,
+    text_vertical_align: str,
+) -> list[dict[str, Any]]:
+    raw_items = payload.get("text_items")
+    if raw_items is None:
+        return []
+    if not isinstance(raw_items, list):
+        raise ValueError("text_items must be a list")
+
+    text_items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            raise ValueError("text item entries must be objects")
+        item_text = _manual_print_text(item.get("text"))
+        if not item_text:
+            continue
+        item_width = _manual_number_range(
+            item.get("width"),
+            default=max(1, label_width_px - (16 * 2)),
+            minimum=8,
+            maximum=max(8, label_width_px * 2),
+        )
+        item_height = _manual_number_range(
+            item.get("height"),
+            default=max(1, label_height_px - (16 * 2)),
+            minimum=8,
+            maximum=max(8, label_height_px * 2),
+        )
+        text_items.append(
+            {
+                "id": _optional_text(item.get("id")) or f"text-{index + 1}",
+                "text": item_text,
+                "x": _manual_number_range(
+                    item.get("x"),
+                    default=0,
+                    minimum=-label_width_px,
+                    maximum=label_width_px,
+                ),
+                "y": _manual_number_range(
+                    item.get("y"),
+                    default=0,
+                    minimum=-label_height_px,
+                    maximum=label_height_px,
+                ),
+                "width": item_width,
+                "height": item_height,
+                "font_size": _manual_number_range(
+                    item.get("font_size"),
+                    default=font_size,
+                    minimum=MANUAL_FONT_SIZE_MIN,
+                    maximum=MANUAL_FONT_SIZE_MAX,
+                ),
+                "text_align": _manual_choice(
+                    item.get("text_align"),
+                    allowed=MANUAL_TEXT_ALIGNS,
+                    default=text_align,
+                ),
+                "vertical_align": _manual_choice(
+                    item.get("vertical_align"),
+                    allowed=MANUAL_TEXT_VERTICAL_ALIGNS,
+                    default=text_vertical_align,
+                ),
+            }
+        )
+    return text_items
+
+
 def _serializable_image_items(image_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -5765,6 +6484,23 @@ def _serializable_image_items(image_items: list[dict[str, Any]]) -> list[dict[st
             "crop": bool(item.get("crop", False)),
         }
         for item in image_items
+    ]
+
+
+def _serializable_text_items(text_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(item.get("id", "")),
+            "text": str(item.get("text", "")),
+            "x": int(item.get("x", 0)),
+            "y": int(item.get("y", 0)),
+            "width": int(item.get("width", 1)),
+            "height": int(item.get("height", 1)),
+            "font_size": int(item.get("font_size", 28)),
+            "text_align": str(item.get("text_align", "center")),
+            "vertical_align": str(item.get("vertical_align", "center")),
+        }
+        for item in text_items
     ]
 
 
@@ -5801,10 +6537,18 @@ def _save_manual_history(
             for item in metadata.get("images", [])
             if isinstance(item, dict) and str(item.get("path", "")).strip()
         ],
+        text_items=[
+            dict(item)
+            for item in metadata.get("text_items", [])
+            if isinstance(item, dict)
+        ],
         printed_at=datetime.now().astimezone(),
         config=config.layout,
         border_style=str(metadata.get("border_style") or "thin"),
         text_align=str(metadata.get("text_align") or "center"),
+        text_vertical_align=str(
+            metadata.get("text_vertical_align") or metadata.get("vertical_align") or "center"
+        ),
         font_size=int(metadata.get("font_size") or config.layout.body_font_size),
         label_width_px=int(metadata.get("label_width_px") or 0),
         label_height_px=int(metadata.get("label_height_px") or 0),

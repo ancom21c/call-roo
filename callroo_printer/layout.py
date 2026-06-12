@@ -24,6 +24,7 @@ MANUAL_BOX_PADDING_Y = 16
 MANUAL_BOX_RADIUS = 12
 MANUAL_BORDER_STYLES = {"none", "thin", "thick", "double"}
 MANUAL_TEXT_ALIGNS = {"left", "center", "right"}
+MANUAL_TEXT_VERTICAL_ALIGNS = {"top", "center", "bottom"}
 MANUAL_LABEL_WIDTH_MIN = 80
 MANUAL_LABEL_HEIGHT_MIN = 56
 MANUAL_LABEL_HEIGHT_MAX = 1200
@@ -140,10 +141,12 @@ def compose_manual_print(
     text: str,
     image_path: Path | None,
     image_items: list[dict[str, object]] | None = None,
+    text_items: list[dict[str, object]] | None = None,
     printed_at: datetime,
     config: LayoutConfig,
     border_style: str = "thin",
     text_align: str = "center",
+    text_vertical_align: str = "center",
     font_size: int | None = None,
     label_width_px: int | None = None,
     label_height_px: int | None = None,
@@ -154,7 +157,8 @@ def compose_manual_print(
     del printed_at
     clean_text = text.strip()
     positioned_images = _normalize_manual_image_items(image_items, image_path)
-    if not clean_text and not positioned_images:
+    positioned_texts = _normalize_manual_text_items(text_items)
+    if not clean_text and not positioned_images and not positioned_texts:
         raise ValueError("manual print requires text or image")
 
     normalized_border = (
@@ -165,6 +169,11 @@ def compose_manual_print(
     normalized_align = (
         text_align.strip().lower()
         if text_align.strip().lower() in MANUAL_TEXT_ALIGNS
+        else "center"
+    )
+    normalized_vertical_align = (
+        text_vertical_align.strip().lower()
+        if text_vertical_align.strip().lower() in MANUAL_TEXT_VERTICAL_ALIGNS
         else "center"
     )
     text_size = _clamp_int(font_size or config.body_font_size, 16, 56)
@@ -196,7 +205,7 @@ def compose_manual_print(
 
     text_lines = ""
     text_height = 0
-    if clean_text:
+    if clean_text and not positioned_texts:
         measuring_image = Image.new("L", (config.paper_width_px, 10), color=255)
         measuring_draw = ImageDraw.Draw(measuring_image)
         text_lines = wrap_text_by_width(clean_text, body_font, inner_width)
@@ -234,7 +243,7 @@ def compose_manual_print(
                 ),
             )
         )
-    if clean_text:
+    if clean_text and not positioned_texts:
         sections.append(("text", text_lines))
 
     gap_total = config.section_gap_px * max(0, len(sections) - 1)
@@ -305,8 +314,66 @@ def compose_manual_print(
                 box,
             )
 
+    if positioned_texts:
+        positioned_inner_width = max(1, label_width - (MANUAL_BOX_PADDING_X * 2))
+        positioned_inner_height = max(1, box_height - (MANUAL_BOX_PADDING_Y * 2))
+        for item in positioned_texts:
+            item_text = str(item.get("text", "")).strip()
+            if not item_text:
+                continue
+            item_width = _clamp_int(
+                int(item.get("width", positioned_inner_width)),
+                1,
+                positioned_inner_width * 2,
+            )
+            item_height = _clamp_int(
+                int(item.get("height", positioned_inner_height)),
+                1,
+                positioned_inner_height * 2,
+            )
+            item_x = _clamp_int(
+                int(item.get("x", 0)),
+                min(0, -item_width + 24),
+                max(0, positioned_inner_width - 24),
+            )
+            item_y = _clamp_int(
+                int(item.get("y", 0)),
+                min(0, -item_height + 24),
+                max(0, positioned_inner_height - 24),
+            )
+            item_font_size = _clamp_int(
+                int(item.get("font_size", text_size)),
+                16,
+                56,
+            )
+            item_align = str(item.get("text_align", normalized_align)).strip().lower()
+            if item_align not in MANUAL_TEXT_ALIGNS:
+                item_align = normalized_align
+            item_vertical_align = (
+                str(item.get("vertical_align", normalized_vertical_align)).strip().lower()
+            )
+            if item_vertical_align not in MANUAL_TEXT_VERTICAL_ALIGNS:
+                item_vertical_align = normalized_vertical_align
+            item_font = load_font(config.font_path, item_font_size)
+            _draw_positioned_text_box(
+                canvas,
+                item_text,
+                item_font,
+                box[0] + MANUAL_BOX_PADDING_X + item_x,
+                box[1] + MANUAL_BOX_PADDING_Y + item_y,
+                item_width,
+                item_height,
+                item_align,
+                item_vertical_align,
+                box,
+            )
+
     spare_height = max(0, box_height - (MANUAL_BOX_PADDING_Y * 2) - content_height)
-    cursor_y = box[1] + MANUAL_BOX_PADDING_Y + (spare_height // 2)
+    cursor_y = (
+        box[1]
+        + MANUAL_BOX_PADDING_Y
+        + _vertical_offset(spare_height, normalized_vertical_align)
+    )
     for index, (kind, value) in enumerate(sections):
         if index:
             cursor_y += config.section_gap_px
@@ -423,6 +490,31 @@ def _normalize_manual_image_items(
     return [{"path": fallback_image_path, "positioned": False}]
 
 
+def _normalize_manual_text_items(
+    text_items: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    if not text_items:
+        return normalized
+    for item in text_items:
+        raw_text = str(item.get("text", "")).strip()
+        if not raw_text:
+            continue
+        normalized.append(
+            {
+                "text": raw_text,
+                "x": int(item.get("x", 0)),
+                "y": int(item.get("y", 0)),
+                "width": int(item.get("width", 1)),
+                "height": int(item.get("height", 1)),
+                "font_size": int(item.get("font_size", 28)),
+                "text_align": str(item.get("text_align", "center")),
+                "vertical_align": str(item.get("vertical_align", "center")),
+            }
+        )
+    return normalized
+
+
 def _prepare_manual_asset(
     asset_path: Path,
     max_width: int,
@@ -495,6 +587,44 @@ def _paste_clipped(
         return
     crop = image.crop((left - x, top - y, right - x, bottom - y))
     canvas.paste(crop, (left, top))
+
+
+def _draw_positioned_text_box(
+    canvas: Image.Image,
+    text: str,
+    font: ImageFont.ImageFont,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    align: str,
+    vertical_align: str,
+    clip_box: tuple[int, int, int, int],
+) -> None:
+    left = max(x, clip_box[0] + MANUAL_BOX_PADDING_X)
+    top = max(y, clip_box[1] + MANUAL_BOX_PADDING_Y)
+    right = min(x + width, clip_box[2] - MANUAL_BOX_PADDING_X + 1)
+    bottom = min(y + height, clip_box[3] - MANUAL_BOX_PADDING_Y + 1)
+    if right <= left or bottom <= top:
+        return
+
+    mask = Image.new("L", (width, height), color=0)
+    mask_draw = ImageDraw.Draw(mask)
+    lines = wrap_text_by_width(text, font, max(1, width))
+    text_height = _multiline_text_height(mask_draw, lines, font)
+    text_y = _vertical_offset(max(0, height - text_height), vertical_align)
+    _draw_aligned_multiline_text(
+        mask_draw,
+        lines,
+        font,
+        0,
+        text_y,
+        width,
+        align,
+        fill=255,
+    )
+    cropped_mask = mask.crop((left - x, top - y, right - x, bottom - y))
+    canvas.paste(0, (left, top), cropped_mask)
 
 
 def _prepare_title_icon(icon_path: Path | None, target_size: int) -> Image.Image | None:
@@ -604,6 +734,8 @@ def _draw_aligned_multiline_text(
     y: int,
     width: int,
     align: str,
+    *,
+    fill: int = 0,
 ) -> None:
     line_y = y
     for line in text.splitlines() or [""]:
@@ -615,8 +747,31 @@ def _draw_aligned_multiline_text(
             line_x = x + width - line_width
         else:
             line_x = x + ((width - line_width) // 2)
-        draw.text((line_x - bbox[0], line_y - bbox[1]), line, fill=0, font=font)
+        draw.text((line_x - bbox[0], line_y - bbox[1]), line, fill=fill, font=font)
         line_y += _bbox_height(bbox) + 6
+
+
+def _vertical_offset(spare_height: int, align: str) -> int:
+    if align == "top":
+        return 0
+    if align == "bottom":
+        return spare_height
+    return spare_height // 2
+
+
+def _multiline_text_height(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+) -> int:
+    total = 0
+    lines = text.splitlines() or [""]
+    for index, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        total += _bbox_height(bbox)
+        if index < len(lines) - 1:
+            total += 6
+    return total
 
 
 def _avoid_orphan_punctuation(

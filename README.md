@@ -200,16 +200,30 @@ python3 -m callroo_printer --config config.json --dashboard --dashboard-host 127
 - `아티팩트` 다이얼로그에서 그림/음악 업로드와 현재 등록된 파일 목록 확인
 - 음악 아티팩트는 브라우저 미디어 컨트롤로 미리 재생
 
-수동 프린터 페이지는 텍스트 입력과 그림 파일 업로드만 받습니다. 문서 파일(PDF, DOCX, TXT 등)은 업로드 대상이 아니며, 서버에서도 이미지 확장자와 실제 이미지 디코딩을 검증합니다. 출력 후보 PNG는 `layout.paper_width_px` 프린터 도트 폭(기본 384dot)에 맞춰 합성되고, 라벨 폭/높이와 그림 좌표도 같은 dot 기준으로 편집합니다. `/print` 캔버스에서 라벨 크기를 드래그로 조절하고 여러 그림을 올려 위치, 크기, 확대/축소, 크롭, 회전을 조정한 뒤 출력 큐에 넣을 수 있습니다. 선택한 그림의 x/y/폭/높이는 직접 입력할 수 있고, 범위를 벗어난 값은 유효한 dot 범위로 자동 보정됩니다. 제출 시 수동 출력 이력에도 PNG가 저장되어 프린터 서비스가 꺼져 있어도 브라우저에서 확인, 다운로드, 재출력, 삭제할 수 있습니다.
+프롬프트/프로필 설정은 기본적으로 잠겨 있습니다. `config.json`의 `dashboard.edit_token`에 토큰을 넣고, 대시보드에서 같은 토큰을 입력해야 편집할 수 있습니다. 비워두면 호환성을 위해 저장 API가 토큰을 요구하지 않습니다.
+
+대시보드는 전체 인증 서버가 아닙니다. 외부 네트워크에 직접 공개하지 말고, 기본 localhost 바인드를 유지하거나 별도 접근 제어 뒤에서 노출하세요.
+
+대시보드 snapshot API는 상태/프리뷰/로그 로딩을 줄이기 위해 짧게 메모리 캐싱됩니다. 기본값은 8초입니다.
+
+## /print 수동 출력
+
+`/print` 수동 프린터 페이지는 텍스트 입력과 그림 파일 업로드만 받습니다. 문서 파일(PDF, DOCX, TXT 등)은 업로드 대상이 아니며, 서버에서도 이미지 확장자와 실제 이미지 디코딩을 검증합니다.
+
+출력 후보 PNG는 `layout.paper_width_px` 프린터 도트 폭(기본 384dot)에 맞춰 합성되고, 라벨 폭/높이, 텍스트 박스, 그림 좌표도 같은 dot 기준으로 편집합니다. 캔버스에서 라벨 크기를 드래그로 조절하고, 여러 그림과 여러 텍스트 박스를 올려 위치와 크기를 조정한 뒤 출력 큐에 넣을 수 있습니다. 텍스트 박스는 가로 정렬(`left`, `center`, `right`)과 세로 정렬(`top`, `center`, `bottom`)을 지원합니다.
+
+선택한 그림이나 텍스트 박스의 x/y/폭/높이는 직접 입력할 수 있고, 범위를 벗어난 값은 유효한 dot 범위로 자동 보정됩니다. 드래그로 크기를 바꿀 때도 4dot 단위로 근사되어 입력칸 값과 캔버스 값이 어긋나지 않도록 맞춥니다. 제출 시 수동 출력 이력에도 PNG가 저장되어 프린터 서비스가 꺼져 있어도 브라우저에서 확인, 다운로드, 재출력, 삭제할 수 있습니다.
 
 간단한 REST 출력 API도 제공합니다. 모든 크기와 좌표 값은 최종 출력 후보 안의 프린터 dot 기준이며, 범위를 벗어난 값은 서버에서 유효 범위로 보정됩니다. 응답에는 공통으로 `ok`, `request_id`, `history_url`, `download_url`이 포함됩니다.
+
+REST API는 호환성을 위해 단일 `text` 문구만 받습니다. 여러 텍스트 박스 배치는 `/print` 대시보드 UI에서 생성한 수동 출력 요청과 이력 재출력에서 사용합니다.
 
 문구 출력은 `POST /api/print/text`에 JSON으로 요청합니다.
 
 ```bash
 curl -X POST http://127.0.0.1:3001/api/print/text \
   -H 'Content-Type: application/json' \
-  -d '{"text":"바로 출력할 문구","label_width":220,"label_height":96,"border":"double","align":"center","font_size":30}'
+  -d '{"text":"바로 출력할 문구","label_width":220,"label_height":96,"border":"double","align":"center","vertical_align":"center","font_size":30}'
 ```
 
 문구 API 옵션:
@@ -221,6 +235,7 @@ curl -X POST http://127.0.0.1:3001/api/print/text \
 | `label_height` 또는 `label_height_px` | 라벨 높이 dot |
 | `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
 | `align` 또는 `text_align` | `left`, `center`, `right` |
+| `vertical_align` 또는 `text_vertical_align` | `top`, `center`, `bottom` |
 | `font_size` | 글자 크기. 16-56 |
 
 그림 출력은 `POST /api/print/image`에 `multipart/form-data`로 파일과 옵션을 보냅니다.
@@ -266,6 +281,7 @@ curl -X POST http://127.0.0.1:3001/api/print/image \
 | `label_height` 또는 `label_height_px` | 라벨 높이 dot |
 | `border` 또는 `border_style` | `none`, `thin`, `thick`, `double` |
 | `align` 또는 `text_align` | 함께 올린 문구 정렬. `left`, `center`, `right` |
+| `vertical_align` 또는 `text_vertical_align` | 함께 올린 문구 세로 정렬. `top`, `center`, `bottom` |
 | `font_size` | 함께 올린 문구 글자 크기. 16-56 |
 | `image_x` 또는 `x` | 라벨 안쪽 기준 그림 X 좌표 |
 | `image_y` 또는 `y` | 라벨 안쪽 기준 그림 Y 좌표 |
@@ -274,13 +290,7 @@ curl -X POST http://127.0.0.1:3001/api/print/image \
 | `rotation`, `image_rotation_degrees`, 또는 `rotation_degrees` | 그림 회전 각도. -180-180 |
 | `crop` 또는 `image_crop` | `true`이면 지정한 그림 영역을 채우도록 크롭 |
 
-수동 출력 이력을 다시 출력하려면 `POST /api/manual-history/<request-id>/reprint`를 호출합니다. 기존 이력의 문구, 라벨, 이미지 위치/크기를 복제해 새 출력 요청으로 큐에 넣습니다.
-
-프롬프트/프로필 설정은 기본적으로 잠겨 있습니다. `config.json`의 `dashboard.edit_token`에 토큰을 넣고, 대시보드에서 같은 토큰을 입력해야 편집할 수 있습니다. 비워두면 호환성을 위해 저장 API가 토큰을 요구하지 않습니다.
-
-대시보드는 전체 인증 서버가 아닙니다. 외부 네트워크에 직접 공개하지 말고, 기본 localhost 바인드를 유지하거나 별도 접근 제어 뒤에서 노출하세요.
-
-대시보드 snapshot API는 상태/프리뷰/로그 로딩을 줄이기 위해 짧게 메모리 캐싱됩니다. 기본값은 8초입니다.
+수동 출력 이력을 다시 출력하려면 `POST /api/manual-history/<request-id>/reprint`를 호출합니다. 기존 이력의 문구, 라벨, 이미지 위치/크기, 텍스트 박스 배치를 복제해 새 출력 요청으로 큐에 넣습니다.
 
 ## Bluetooth와 MXW01
 

@@ -315,6 +315,20 @@ class ServiceBluetoothResetTest(unittest.TestCase):
                     "font_size": 30,
                     "label_width_px": 200,
                     "label_height_px": 100,
+                    "text_vertical_align": "bottom",
+                    "text_items": [
+                        {
+                            "id": "title",
+                            "text": "위쪽",
+                            "x": 0,
+                            "y": 0,
+                            "width": 120,
+                            "height": 48,
+                            "font_size": 28,
+                            "text_align": "center",
+                            "vertical_align": "top",
+                        }
+                    ],
                     "image_scale_percent": 160,
                     "image_crop": True,
                     "image_rotation_degrees": 90,
@@ -331,8 +345,11 @@ class ServiceBluetoothResetTest(unittest.TestCase):
             manual_payload = json.loads((job.root / "manual-print.json").read_text(encoding="utf-8"))
             self.assertEqual(manual_payload["border_style"], "thick")
             self.assertEqual(manual_payload["text_align"], "left")
+            self.assertEqual(manual_payload["text_vertical_align"], "bottom")
             self.assertEqual(manual_payload["label_width_px"], 200)
             self.assertEqual(manual_payload["label_height_px"], 100)
+            self.assertEqual(manual_payload["text_items"][0]["text"], "위쪽")
+            self.assertEqual(manual_payload["text_items"][0]["vertical_align"], "top")
             self.assertEqual(manual_payload["image_scale_percent"], 160)
             self.assertTrue(manual_payload["image_crop"])
             self.assertEqual(manual_payload["image_rotation_degrees"], 90)
